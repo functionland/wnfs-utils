@@ -15,16 +15,16 @@ use anyhow::Result;
 
 use crate::blockstore::FFIFriendlyBlockStore;
 
-pub struct PrivateDirectoryHelper {
-    pub store: FFIFriendlyBlockStore,
+pub struct PrivateDirectoryHelper<'a> {
+    pub store: FFIFriendlyBlockStore<'a>,
     rng: ThreadRng
 }
 
 // Single root (private ref) implementation of the wnfs private directory using KVBlockStore.
 // TODO: we assumed all the write, mkdirs use same roots here. this could be done using prepend
 // a root path to all path segments.
-impl PrivateDirectoryHelper {
-    pub fn new(block_store: FFIFriendlyBlockStore) -> Self
+impl<'a> PrivateDirectoryHelper<'a> {
+    pub fn new(block_store: FFIFriendlyBlockStore<'a>) -> Self
     where
     
      {
@@ -136,7 +136,7 @@ impl PrivateDirectoryHelper {
 }
 
 // Implement synced version of the library for using in android jni.
-impl PrivateDirectoryHelper {
+impl<'a> PrivateDirectoryHelper<'a> {
     pub fn synced_create_private_forest(&mut self) -> Result<Cid>
     {
         let runtime =

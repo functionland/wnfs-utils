@@ -10,22 +10,22 @@ use multihash::{Code, MultihashDigest};
 use wnfs::FsError;
 use wnfs::BlockStore;
 
-pub trait FFIStore {
-    fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>>;
+pub trait FFIStore<'a> {
+    fn get_block<'b>(&'b self, cid: Vec<u8>) -> Result<Vec<u8>>;
     fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<Vec<u8>>;
 }
 
-pub struct FFIFriendlyBlockStore{
-    pub ffi_store: Box<dyn FFIStore>
+pub struct FFIFriendlyBlockStore<'a>{
+    pub ffi_store: Box<dyn FFIStore<'a> + 'a>
 } 
 
 //--------------------------------------------------------------------------------------------------
 // Implementations
 //--------------------------------------------------------------------------------------------------
 
-impl FFIFriendlyBlockStore {
+impl<'a> FFIFriendlyBlockStore<'a> {
     /// Creates a new kv block store.
-    pub fn new(ffi_store: Box<dyn FFIStore>) -> Self
+    pub fn new(ffi_store: Box<dyn FFIStore<'a> + 'a>) -> Self
     {
         Self{
             ffi_store
@@ -35,7 +35,7 @@ impl FFIFriendlyBlockStore {
 
 
 #[async_trait(?Send)]
-impl BlockStore for FFIFriendlyBlockStore {
+impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
     /// Retrieves an array of bytes from the block store with given CID.
     async fn get_block<'a>(&'a self, cid: &Cid) -> Result<Cow<'a, Vec<u8>>> {
         let bytes = self.ffi_store.get_block(cid.to_bytes())
