@@ -10,7 +10,7 @@ use wnfs::BlockStore;
 
 pub trait FFIStore<'a> {
     fn get_block<'b>(&'b self, cid: Vec<u8>) -> Result<Vec<u8>>;
-    fn put_block<'b>(&'b self, bytes: Vec<u8>, codec: u64) -> Result<Vec<u8>>;
+    fn put_block<'b>(&'b self, bytes: Vec<u8>, codec: Vec<u8>) -> Result<Vec<u8>>;
 }
 
 pub struct FFIFriendlyBlockStore<'a>{
