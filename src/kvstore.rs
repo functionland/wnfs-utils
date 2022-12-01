@@ -1,6 +1,7 @@
 use kv::*;
 use libipld::{
-    IpldCodec,
+    cid::Version,
+    Cid, IpldCodec,
 };
 use anyhow::Result;
 
@@ -8,6 +9,7 @@ use anyhow::Result;
 use wnfs::FsError;
 
 use crate::blockstore::FFIStore;
+use multihash::{MultihashDigest};
 
 pub struct KVBlockStore{
     pub store: Store,
@@ -45,13 +47,19 @@ impl<'a> FFIStore<'a> for KVBlockStore {
     }
 
     /// Stores an array of bytes in the block store.
-    fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<Vec<u8>>{
-        let key = Raw::from(cid.to_owned());
+    fn put_block(&self, bytes: Vec<u8>, codec: u64) -> Result<Vec<u8>>{
+        let hash = multihash::Code::Sha2_256.digest(&bytes);
+        let codec = IpldCodec::try_from(codec).unwrap();
+        let cid = Cid::new(Version::V1, codec.into(), hash)?;
+
+        let cid_bytes = cid.to_bytes();
+        let key = Raw::from(cid_bytes.to_owned());
         let value = Raw::from(bytes);
+        
         // A Bucket provides typed access to a section of the key/value store
         let bucket = self.store.bucket::<Raw, Raw>(Some("default"))?;
 
         bucket.set(&key, &value)?;
-        Ok(cid)
+        Ok(cid_bytes)
     }
 }
