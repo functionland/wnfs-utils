@@ -44,7 +44,8 @@ impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
     /// Stores an array of bytes in the block store.
     async fn put_block(&mut self, bytes: Vec<u8>, codec: IpldCodec) -> Result<Cid> {
         let codec_u64: u64 = codec.into();
-        let cid_bytes = self.ffi_store.put_block(bytes.to_owned(), codec_u64)?;
+        let codec_vu8: Vec<u8> = codec_u64.iter().flat_map(|val| val.to_be_bytes()).collect();
+        let cid_bytes = self.ffi_store.put_block(bytes.to_owned(), codec_vu8)?;
         let cid = Cid::try_from(cid_bytes).unwrap();
         Ok(cid)
     }
