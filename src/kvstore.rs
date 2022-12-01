@@ -1,4 +1,5 @@
 use kv::*;
+use std::convert::TryInto;
 use libipld::{
     cid::Version,
     Cid, IpldCodec,
@@ -15,6 +16,15 @@ pub struct KVBlockStore{
     pub store: Store,
     pub codec: IpldCodec
 } 
+
+fn vec_to_array<T>(v: Vec<T>) -> [T; 8] where T: Copy {
+    let slice = v.as_slice();
+    let array: [T; 8] = match slice.try_into() {
+        Ok(ba) => ba,
+        Err(_) => panic!("Expected a Vec of length {} but it was {}", 8, v.len()),
+    };
+    array
+}
 
 //--------------------------------------------------------------------------------------------------
 // Implementations
@@ -47,9 +57,11 @@ impl<'a> FFIStore<'a> for KVBlockStore {
     }
 
     /// Stores an array of bytes in the block store.
-    fn put_block(&self, bytes: Vec<u8>, codec: u64) -> Result<Vec<u8>>{
+    fn put_block(&self, bytes: Vec<u8>, codec: Vec<u8>) -> Result<Vec<u8>>{
+        let codec_u8_array:[u8;8] = vec_to_array(codec);
+        let codec_u64 = u64::from_be_bytes(codec_u8_array);
         let hash = multihash::Code::Sha2_256.digest(&bytes);
-        let codec = IpldCodec::try_from(codec).unwrap();
+        let codec = IpldCodec::try_from(codec_u64).unwrap();
         let cid = Cid::new(Version::V1, codec.into(), hash)?;
 
         let cid_bytes = cid.to_bytes();
