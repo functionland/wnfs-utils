@@ -12,7 +12,7 @@ use wnfs::BlockStore;
 
 pub trait FFIStore<'a> {
     fn get_block<'b>(&'b self, cid: Vec<u8>) -> Result<Vec<u8>>;
-    fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<Vec<u8>>;
+    fn put_block<'b>(&'b self, bytes: Vec<u8>, codec: Vec<u8>) -> Result<Vec<u8>>;
 }
 
 pub struct FFIFriendlyBlockStore<'a>{
@@ -44,11 +44,12 @@ impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
     }
 
     /// Stores an array of bytes in the block store.
-    async fn put_block(&mut self, bytes: Vec<u8>, codec: IpldCodec) -> Result<Cid> {
-        let hash = Code::Sha2_256.digest(&bytes);
-        let cid = Cid::new(Version::V1, codec.into(), hash)?;
-        self.ffi_store.put_block(cid.to_bytes(), bytes)?;
-        Ok(cid)
+    async fn put_block<'a>(&'a self, bytes: Vec<u8>, codec: IpldCodec) -> Result<Cow<'a, Vec<u8>>> {
+        let codecBytes: Vec<u8> = codec.iter().flat_map(|val| val.to_be_bytes()).collect();
+        //let hash = Code::Sha2_256.digest(&bytes);
+        //let cid = Cid::new(Version::V1, codec.into(), hash)?;
+        let cidBytes = self.ffi_store.put_block(bytes, codecBytes)?;
+        Ok(Cow::Owned(cidBytes))
     }
 }
 
