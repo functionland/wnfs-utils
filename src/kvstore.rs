@@ -60,7 +60,7 @@ impl<'a> FFIStore<'a> for KVBlockStore {
     fn put_block(&self, bytes: Vec<u8>, codec: i64) -> Result<Vec<u8>>{
         //let codec_u8_array:[u8;8] = vec_to_array(codec);
         //let codec_u64 = u64::from_be_bytes(codec_u8_array);
-        let codec_u64: u64 = u64::try_from(codec);
+        let codec_u64: u64 = u64::try_from(codec).unwrap();
         let hash = multihash::Code::Sha2_256.digest(&bytes);
         let codec = IpldCodec::try_from(codec_u64).unwrap();
         let cid = Cid::new(Version::V1, codec.into(), hash)?;
