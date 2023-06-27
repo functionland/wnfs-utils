@@ -1,16 +1,17 @@
 use kv::*;
+
 use std::convert::TryInto;
-use libipld::{
+use wnfs::libipld::{
     cid::Version,
     Cid, IpldCodec,
+    multihash::MultihashDigest,
+    multihash::MultihashGeneric,
 };
 use anyhow::Result;
 
-
-use wnfs::FsError;
+use wnfs::error::FsError;
 
 use crate::blockstore::FFIStore;
-use multihash::{MultihashDigest};
 
 pub struct KVBlockStore{
     pub store: Store,
@@ -52,7 +53,7 @@ impl<'a> FFIStore<'a> for KVBlockStore {
 
         let bytes = bucket
             .get(&Raw::from(cid))
-            .map_err(|_| FsError::CIDNotFoundInBlockstore)?.unwrap().to_vec();
+            .map_err(|_| FsError::NotFound)?.unwrap().to_vec();
         Ok(bytes)
     }
 
@@ -61,7 +62,7 @@ impl<'a> FFIStore<'a> for KVBlockStore {
         //let codec_u8_array:[u8;8] = vec_to_array(codec);
         //let codec_u64 = u64::from_be_bytes(codec_u8_array);
         let codec_u64: u64 = u64::try_from(codec).unwrap();
-        let hash = multihash::Code::Sha2_256.digest(&bytes);
+        let hash: MultihashGeneric<64> = multihash::Code::Sha2_256.digest(&bytes);
         let codec = IpldCodec::try_from(codec_u64).unwrap();
         let cid = Cid::new(Version::V1, codec.into(), hash)?;
 
