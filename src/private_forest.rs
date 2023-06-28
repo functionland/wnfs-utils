@@ -664,21 +664,28 @@ mod private_tests {
         println!("cid: {:?}", forest_cid);
         let forest = &mut helper.load_forest(forest_cid).await.unwrap();
         let (cid, private_ref) = helper.init(forest, empty_key).await.unwrap();
-        let root_dir = &mut helper.get_root_dir(forest.to_owned(), private_ref).await.unwrap();
-
-        helper.write_file(forest, root_dir, &["root".into(), "hello".into(), "world.txt".into()], b"hello, world!".to_vec(), 0).await;
+        let root_dir = &mut helper.get_root_dir(forest.to_owned(), private_ref.to_owned()).await.unwrap();
+        println!("cid: {:?}", cid);
+        println!("private_ref: {:?}", private_ref.to_owned());
+        let (cid, private_ref) = helper.write_file(forest, root_dir, &["root".into(), "hello".into(), "world.txt".into()], b"hello, world!".to_vec(), 0).await.unwrap();
+        println!("cid: {:?}", cid);
+        println!("private_ref: {:?}", private_ref);
         let ls_result = helper.ls_files(forest, root_dir, &["root".into()]).await;
         println!("ls: {:?}", ls_result);
-        helper.mkdir(forest, root_dir, &["root".into(), "hi".into()]).await;
+        let (cid, private_ref) = helper.mkdir(forest, root_dir, &["root".into(), "hi".into()]).await.unwrap();
+        println!("cid: {:?}", cid);
+        println!("private_ref: {:?}", private_ref);
         let ls_result = helper.ls_files(forest, root_dir, &["root".into()]).await.unwrap();
         assert_eq!(ls_result.get(0).unwrap().0, "hello");
         assert_eq!(ls_result.get(1).unwrap().0, "hi");
         let content = helper.read_file(forest, root_dir, &["root".into(), "hello".into(), "world.txt".into()]).await.unwrap();
         assert_eq!(content, b"hello, world!".to_vec());
-        helper.rm(forest, root_dir,  &["root".into(), "hello".into(), "world.txt".into()]).await;
+        let (cid, private_ref) = helper.rm(forest, root_dir,  &["root".into(), "hello".into(), "world.txt".into()]).await.unwrap();
+        println!("cid: {:?}", cid);
+        println!("private_ref: {:?}", private_ref.to_owned());
         let content = helper.read_file(forest, root_dir, &["root".into(), "hello".into(), "world.txt".into()]).await;
         assert_eq!(content.ok(), None);
-        // TODO: do we need this concept anymore?
+        // TODO: the trait to serialize the private_ref is removed
         // let private_ref_serialized = serde_json::to_string(&private_ref).unwrap();
         // println!("private ref: \n{}", private_ref_serialized);
     }
