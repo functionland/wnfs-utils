@@ -1,21 +1,19 @@
-use std::{borrow::Cow};
-use wnfs::libipld::{
-    Cid, IpldCodec,
-};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::borrow::Cow;
+use wnfs::libipld::{Cid, IpldCodec};
 
-use wnfs::error::FsError;
 use wnfs::common::BlockStore;
+use wnfs::error::FsError;
 
 pub trait FFIStore<'a> {
     fn get_block<'b>(&'b self, cid: Vec<u8>) -> Result<Vec<u8>>;
     fn put_block<'b>(&'b self, bytes: Vec<u8>, codec: i64) -> Result<Vec<u8>>;
 }
 
-pub struct FFIFriendlyBlockStore<'a>{
-    pub ffi_store: Box<dyn FFIStore<'a> + 'a>
-} 
+pub struct FFIFriendlyBlockStore<'a> {
+    pub ffi_store: Box<dyn FFIStore<'a> + 'a>,
+}
 
 //--------------------------------------------------------------------------------------------------
 // Implementations
@@ -23,20 +21,18 @@ pub struct FFIFriendlyBlockStore<'a>{
 
 impl<'a> FFIFriendlyBlockStore<'a> {
     /// Creates a new kv block store.
-    pub fn new(ffi_store: Box<dyn FFIStore<'a> + 'a>) -> Self
-    {
-        Self{
-            ffi_store
-        }
+    pub fn new(ffi_store: Box<dyn FFIStore<'a> + 'a>) -> Self {
+        Self { ffi_store }
     }
 }
-
 
 #[async_trait(?Send)]
 impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
     /// Retrieves an array of bytes from the block store with given CID.
     async fn get_block(&self, cid: &Cid) -> Result<Cow<Vec<u8>>> {
-        let bytes = self.ffi_store.get_block(cid.to_bytes())
+        let bytes = self
+            .ffi_store
+            .get_block(cid.to_bytes())
             .map_err(|_| FsError::NotFound)?;
         Ok(Cow::Owned(bytes))
     }
@@ -52,8 +48,6 @@ impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
     }
 }
 
-
-
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
@@ -62,9 +56,9 @@ impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
 mod blockstore_tests {
     use wnfs::libipld::{cbor::DagCborCodec, codec::Encode, IpldCodec};
 
-    use wnfs::{common::BlockStore};
+    use wnfs::common::BlockStore;
 
-    use crate::{kvstore::KVBlockStore, blockstore::FFIFriendlyBlockStore};
+    use crate::{blockstore::FFIFriendlyBlockStore, kvstore::KVBlockStore};
 
     #[tokio::test]
     async fn inserted_items_can_be_fetched() {
