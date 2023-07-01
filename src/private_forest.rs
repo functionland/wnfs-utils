@@ -740,11 +740,11 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
     pub fn synced_get_root_dir(
         &mut self,
-        forest: Rc<PrivateForest>,
+        forest: &mut Rc<PrivateForest>,
         private_ref: PrivateRef,
     ) -> Result<Rc<PrivateDirectory>, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.get_root_dir(forest, private_ref));
+        return runtime.block_on(self.get_root_dir(forest.to_owned(), private_ref));
     }
 
     pub fn synced_get_private_ref(
