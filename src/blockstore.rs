@@ -1,14 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::borrow::Cow;
-use wnfs::libipld::{Cid, IpldCodec};
+use bytes::Bytes;
 
-use wnfs::common::BlockStore;
-use wnfs::error::FsError;
+use libipld::Cid;
+use wnfs::common::{BlockStore, BlockStoreError};
 
 pub trait FFIStore<'a> {
     fn get_block<'b>(&'b self, cid: Vec<u8>) -> Result<Vec<u8>>;
-    fn put_block<'b>(&'b self, bytes: Vec<u8>, codec: i64) -> Result<Vec<u8>>;
+    fn put_block<'b>(&'b self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()>;
 }
 
 pub struct FFIFriendlyBlockStore<'a> {
@@ -29,22 +28,32 @@ impl<'a> FFIFriendlyBlockStore<'a> {
 #[async_trait(?Send)]
 impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
     /// Retrieves an array of bytes from the block store with given CID.
-    async fn get_block(&self, cid: &Cid) -> Result<Cow<Vec<u8>>> {
+    async fn get_block(&self, cid: &Cid) -> Result<Bytes> {
         let bytes = self
             .ffi_store
             .get_block(cid.to_bytes())
-            .map_err(|_| FsError::NotFound)?;
-        Ok(Cow::Owned(bytes))
+            .map_err(|_| BlockStoreError::CIDNotFound(*cid))?;
+        Ok(Bytes::copy_from_slice(&bytes))
     }
 
     /// Stores an array of bytes in the block store.
-    async fn put_block(&self, bytes: Vec<u8>, codec: IpldCodec) -> Result<Cid> {
-        let codec_u64: u64 = codec.into();
-        //let codec_vu8: Vec<u8> = codec_u64.to_be_bytes().to_vec();
-        let codec_i64: i64 = i64::try_from(codec_u64).unwrap();
-        let cid_bytes = self.ffi_store.put_block(bytes.to_owned(), codec_i64)?;
-        let cid = Cid::try_from(cid_bytes).unwrap();
-        Ok(cid)
+    async fn put_block(&self, bytes: impl Into<Bytes>, codec: u64) -> Result<Cid> {
+        let data: Bytes = bytes.into();
+
+        let cid_res = self.create_cid(&data, codec);
+        match cid_res.is_err() {
+            true => Err(cid_res.err().unwrap()),
+            false => {
+                let cid = cid_res.unwrap();
+                let result = self
+                    .ffi_store
+                    .put_block(cid.to_owned().to_bytes(), data.to_vec());
+                match result {
+                    Ok(_) => Ok(cid.to_owned()),
+                    Err(e) => Err(e),
+                }
+            }
+        }
     }
 }
 
@@ -54,15 +63,15 @@ impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
 
 #[cfg(test)]
 mod blockstore_tests {
-    use wnfs::libipld::{cbor::DagCborCodec, codec::Encode, IpldCodec};
+    use libipld::{cbor::DagCborCodec, codec::Encode, IpldCodec};
 
-    use wnfs::common::BlockStore;
+    use wnfs::common::{BlockStore, CODEC_DAG_CBOR};
 
     use crate::{blockstore::FFIFriendlyBlockStore, kvstore::KVBlockStore};
 
     #[tokio::test]
     async fn inserted_items_can_be_fetched() {
-        let store = KVBlockStore::new(String::from("./tmp/test1"), IpldCodec::DagCbor);
+        let store = KVBlockStore::new(String::from("./tmp/test1"), CODEC_DAG_CBOR);
         let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
         let first_bytes = {
             let mut tmp = vec![];
@@ -83,12 +92,12 @@ mod blockstore_tests {
         };
 
         let first_cid = &blockstore
-            .put_block(first_bytes, IpldCodec::DagCbor)
+            .put_block(first_bytes, IpldCodec::DagCbor.into())
             .await
             .unwrap();
 
         let second_cid = &blockstore
-            .put_block(second_bytes, IpldCodec::DagCbor)
+            .put_block(second_bytes, IpldCodec::DagCbor.into())
             .await
             .unwrap();
 

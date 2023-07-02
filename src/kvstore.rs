@@ -1,30 +1,15 @@
 use kv::*;
 
 use anyhow::Result;
-use std::convert::TryInto;
-use wnfs::libipld::{
-    cid::Version, multihash::MultihashDigest, multihash::MultihashGeneric, Cid, IpldCodec,
-};
+use libipld::Cid;
 
-use wnfs::error::FsError;
+use wnfs::common::BlockStoreError;
 
 use crate::blockstore::FFIStore;
 
 pub struct KVBlockStore {
     pub store: Store,
-    pub codec: IpldCodec,
-}
-
-fn vec_to_array<T>(v: Vec<T>) -> [T; 8]
-where
-    T: Copy,
-{
-    let slice = v.as_slice();
-    let array: [T; 8] = match slice.try_into() {
-        Ok(ba) => ba,
-        Err(_) => panic!("Expected a Vec of length {} but it was {}", 8, v.len()),
-    };
-    array
+    pub codec: u64,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -33,7 +18,7 @@ where
 
 impl KVBlockStore {
     /// Creates a new kv block store.
-    pub fn new(db_path: String, codec: IpldCodec) -> Self {
+    pub fn new(db_path: String, codec: u64) -> Self {
         // Configure the database
         // Open the key/value store
         Self {
@@ -50,30 +35,22 @@ impl<'a> FFIStore<'a> for KVBlockStore {
         let bucket = self.store.bucket::<Raw, Raw>(Some("default"))?;
 
         let bytes = bucket
-            .get(&Raw::from(cid))
-            .map_err(|_| FsError::NotFound)?
+            .get(&Raw::from(cid.to_owned()))
+            .map_err(|_| BlockStoreError::CIDNotFound(Cid::try_from(cid).unwrap()))?
             .unwrap()
             .to_vec();
         Ok(bytes)
     }
 
     /// Stores an array of bytes in the block store.
-    fn put_block(&self, bytes: Vec<u8>, codec: i64) -> Result<Vec<u8>> {
-        //let codec_u8_array:[u8;8] = vec_to_array(codec);
-        //let codec_u64 = u64::from_be_bytes(codec_u8_array);
-        let codec_u64: u64 = u64::try_from(codec).unwrap();
-        let hash: MultihashGeneric<64> = multihash::Code::Sha2_256.digest(&bytes);
-        let codec = IpldCodec::try_from(codec_u64).unwrap();
-        let cid = Cid::new(Version::V1, codec.into(), hash)?;
-
-        let cid_bytes = cid.to_bytes();
-        let key = Raw::from(cid_bytes.to_owned());
+    fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()> {
+        let key = Raw::from(cid.to_owned());
         let value = Raw::from(bytes);
 
         // A Bucket provides typed access to a section of the key/value store
         let bucket = self.store.bucket::<Raw, Raw>(Some("default"))?;
 
         bucket.set(&key, &value)?;
-        Ok(cid_bytes)
+        Ok(())
     }
 }
