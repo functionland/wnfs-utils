@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -10,8 +12,9 @@ pub trait FFIStore<'a> {
     fn put_block<'b>(&'b self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()>;
 }
 
+#[derive(Clone)]
 pub struct FFIFriendlyBlockStore<'a> {
-    pub ffi_store: Box<dyn FFIStore<'a> + 'a>,
+    pub ffi_store: Rc<dyn FFIStore<'a>>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -20,7 +23,7 @@ pub struct FFIFriendlyBlockStore<'a> {
 
 impl<'a> FFIFriendlyBlockStore<'a> {
     /// Creates a new kv block store.
-    pub fn new(ffi_store: Box<dyn FFIStore<'a> + 'a>) -> Self {
+    pub fn new(ffi_store: Rc<dyn FFIStore<'a>>) -> Self {
         Self { ffi_store }
     }
 }
@@ -63,6 +66,8 @@ impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
 
 #[cfg(test)]
 mod blockstore_tests {
+    use std::rc::Rc;
+
     use libipld::{cbor::DagCborCodec, codec::Encode, IpldCodec};
 
     use wnfs::common::{BlockStore, CODEC_DAG_CBOR};
@@ -72,7 +77,7 @@ mod blockstore_tests {
     #[tokio::test]
     async fn inserted_items_can_be_fetched() {
         let store = KVBlockStore::new(String::from("./tmp/test1"), CODEC_DAG_CBOR);
-        let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
+        let blockstore = &mut FFIFriendlyBlockStore::new(Rc::new(store));
         let first_bytes = {
             let mut tmp = vec![];
             vec![1, 2, 3, 4, 5]

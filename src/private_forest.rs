@@ -27,6 +27,8 @@ use crate::blockstore::FFIFriendlyBlockStore;
 
 pub struct PrivateDirectoryHelper<'a> {
     pub store: FFIFriendlyBlockStore<'a>,
+    forest: Rc<PrivateForest>,
+    root_dir: Rc<PrivateDirectory>,
     rng: ThreadRng,
 }
 
@@ -34,22 +36,212 @@ pub struct PrivateDirectoryHelper<'a> {
 // TODO: we assumed all the write, mkdirs use same roots here. this could be done using prepend
 // a root path to all path segments.
 impl<'a> PrivateDirectoryHelper<'a> {
-    pub fn new(block_store: FFIFriendlyBlockStore<'a>) -> Self
-where {
-        Self {
-            store: block_store,
-            rng: thread_rng(),
+    async fn init(
+        store: &mut FFIFriendlyBlockStore<'a>,
+        wnfs_key: Vec<u8>,
+    ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
+        let rng = &mut thread_rng();
+        let ratchet_seed: [u8; 32];
+        let inumber: [u8; 32];
+        if wnfs_key.is_empty() {
+            let wnfs_random_key = AesKey::new(utils::get_random_bytes::<32>(rng));
+            ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
+            inumber = utils::get_random_bytes::<32>(rng); // Needs to be random
+        } else {
+            ratchet_seed = Sha3_256::hash(&wnfs_key);
+            inumber = Sha3_256::hash(&ratchet_seed);
+        }
+
+        let forest_res = PrivateDirectoryHelper::create_private_forest(store.to_owned()).await;
+
+        if forest_res.is_ok() {
+            let (forest, _) = &mut forest_res.unwrap();
+            // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
+            let root_dir_res = PrivateDirectory::new_with_seed_and_store(
+                Namefilter::default(),
+                Utc::now(),
+                ratchet_seed,
+                inumber,
+                forest,
+                store,
+                rng,
+            )
+            .await;
+
+            if root_dir_res.is_ok() {
+                // Private ref contains data and keys for fetching and decrypting the directory node in the private forest.
+                let root_dir = &mut root_dir_res.unwrap();
+                let access_key = root_dir.as_node().store(forest, store, rng).await;
+                if access_key.is_ok() {
+                    let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                        store.to_owned(),
+                        forest.to_owned(),
+                    )
+                    .await;
+                    if forest_cid.is_ok() {
+                        Ok((
+                            PrivateDirectoryHelper {
+                                store: store.to_owned(),
+                                forest: forest.to_owned(),
+                                root_dir: root_dir.to_owned(),
+                                rng: rng.to_owned(),
+                            },
+                            access_key.ok().unwrap(),
+                            forest_cid.unwrap(),
+                        ))
+                    } else {
+                        trace!(
+                            "wnfsError in init: {:?}",
+                            forest_cid.as_ref().err().unwrap().to_string()
+                        );
+                        Err(forest_cid.err().unwrap().to_string())
+                    }
+                } else {
+                    trace!(
+                        "wnfsError in init: {:?}",
+                        access_key.as_ref().err().unwrap().to_string()
+                    );
+                    Err(access_key.err().unwrap().to_string())
+                }
+            } else {
+                trace!(
+                    "wnfsError occured in init: {:?}",
+                    root_dir_res.as_ref().to_owned().err().unwrap().to_string()
+                );
+                Err(root_dir_res.as_ref().to_owned().err().unwrap().to_string())
+            }
+        } else {
+            let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
+            trace!("wnfsError occured in init: {:?}", err);
+            Err(err)
         }
     }
 
-    pub async fn create_private_forest(&mut self) -> Result<Cid, String> {
+    pub async fn load_with_wnfs_key(
+        store: &mut FFIFriendlyBlockStore<'a>,
+        forest_cid: Cid,
+        wnfs_key: Vec<u8>,
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+        let rng = &mut thread_rng();
+        let ratchet_seed: [u8; 32];
+        let inumber: [u8; 32];
+        if wnfs_key.is_empty() {
+            let wnfs_random_key = AesKey::new(utils::get_random_bytes::<32>(rng));
+            ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
+            inumber = utils::get_random_bytes::<32>(rng); // Needs to be random
+        } else {
+            ratchet_seed = Sha3_256::hash(&wnfs_key);
+            inumber = Sha3_256::hash(&ratchet_seed);
+        }
+
+        let forest_res =
+            PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
+        if forest_res.is_ok() {
+            let forest = &mut forest_res.unwrap();
+            // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
+            let root_dir = PrivateDirectory::new_with_seed_and_store(
+                Namefilter::default(),
+                Utc::now(),
+                ratchet_seed,
+                inumber,
+                forest,
+                store,
+                rng,
+            )
+            .await;
+
+            if root_dir.is_ok() {
+                let latest_root_dir = root_dir.unwrap().search_latest(forest, store).await;
+                if latest_root_dir.is_ok() {
+                    Ok(PrivateDirectoryHelper {
+                        store: store.to_owned(),
+                        forest: forest.to_owned(),
+                        root_dir: latest_root_dir.unwrap(),
+                        rng: rng.to_owned(),
+                    })
+                } else {
+                    trace!(
+                        "wnfsError in load_with_wnfs_key: {:?}",
+                        latest_root_dir.as_ref().err().unwrap().to_string()
+                    );
+                    Err(latest_root_dir.err().unwrap().to_string())
+                }
+            } else {
+                trace!(
+                    "wnfsError occured in load_with_wnfs_key: {:?}",
+                    root_dir.as_ref().to_owned().err().unwrap().to_string()
+                );
+                Err(root_dir.as_ref().to_owned().err().unwrap().to_string())
+            }
+        } else {
+            let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
+            trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+            Err(err)
+        }
+    }
+
+    pub async fn load_with_access_key(
+        store: &mut FFIFriendlyBlockStore<'a>,
+        forest_cid: Cid,
+        access_key: AccessKey,
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+        let rng = thread_rng();
+
+        let forest_res =
+            PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
+        if forest_res.is_ok() {
+            let forest = &mut forest_res.unwrap();
+            let node_res = PrivateNode::load(&access_key, &forest, store).await;
+
+            if node_res.is_ok() {
+                let root_dir = node_res.unwrap().as_dir();
+                if root_dir.is_ok() {
+                    let latest_root_dir = root_dir.unwrap().search_latest(forest, store).await;
+                    if latest_root_dir.is_ok() {
+                        Ok(PrivateDirectoryHelper {
+                            store: store.to_owned(),
+                            forest: forest.to_owned(),
+                            root_dir: latest_root_dir.unwrap(),
+                            rng,
+                        })
+                    } else {
+                        trace!(
+                            "wnfsError in load_with_wnfs_key: {:?}",
+                            latest_root_dir.as_ref().err().unwrap().to_string()
+                        );
+                        Err(latest_root_dir.err().unwrap().to_string())
+                    }
+                } else {
+                    trace!(
+                        "wnfsError in load_with_wnfs_key: {:?}",
+                        root_dir.as_ref().err().unwrap().to_string()
+                    );
+                    Err(root_dir.err().unwrap().to_string())
+                }
+            } else {
+                trace!(
+                    "wnfsError occured in load_with_wnfs_key: {:?}",
+                    node_res.as_ref().to_owned().err().unwrap().to_string()
+                );
+                Err(node_res.as_ref().to_owned().err().unwrap().to_string())
+            }
+        } else {
+            let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
+            trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+            Err(err)
+        }
+    }
+
+    async fn create_private_forest(
+        store: FFIFriendlyBlockStore<'a>,
+    ) -> Result<(Rc<PrivateForest>, Cid), String> {
         // Create the private forest (a HAMT), a map-like structure where file and directory ciphertexts are stored.
-        let forest = &mut Rc::new(PrivateForest::new());
+        let forest = Rc::new(PrivateForest::new());
 
         // Doing this will give us a single root CID
-        let private_root_cid = self.store.put_async_serializable(forest).await;
+        let private_root_cid = store.put_async_serializable(&forest).await;
         if private_root_cid.is_ok() {
-            Ok(private_root_cid.ok().unwrap())
+            Ok((forest, private_root_cid.ok().unwrap()))
         } else {
             trace!(
                 "wnfsError occured in create_private_forest: {:?}",
@@ -59,27 +251,30 @@ where {
         }
     }
 
-    pub async fn load_forest(&mut self, forest_cid: Cid) -> Result<Rc<PrivateForest>, String> {
+    async fn load_private_forest(
+        store: FFIFriendlyBlockStore<'a>,
+        forest_cid: Cid,
+    ) -> Result<Rc<PrivateForest>, String> {
         // Deserialize private forest from the blockstore.
-        let forest = self
-            .store
-            .get_deserializable::<PrivateForest>(&forest_cid)
-            .await;
+        let forest = store.get_deserializable::<PrivateForest>(&forest_cid).await;
         if forest.is_ok() {
-            Ok(Rc::new(forest.ok().unwrap()))
+            Ok(Rc::new(forest.unwrap()))
         } else {
             trace!(
-                "wnfsError occured in load_forest: {:?}",
+                "wnfsError occured in load__private_forest: {:?}",
                 forest.as_ref().err().unwrap()
             );
             Err(forest.err().unwrap().to_string())
         }
     }
 
-    pub async fn update_forest(&mut self, hamt: &mut Rc<PrivateForest>) -> Result<Cid, String> {
+    pub async fn update_private_forest(
+        store: FFIFriendlyBlockStore<'a>,
+        forest: Rc<PrivateForest>,
+    ) -> Result<Cid, String> {
         // Serialize the private forest to DAG CBOR.
         // Doing this will give us a single root CID
-        let private_root_cid = self.store.put_async_serializable(hamt.as_ref()).await;
+        let private_root_cid = store.put_async_serializable(&forest).await;
         if private_root_cid.is_ok() {
             Ok(private_root_cid.ok().unwrap())
         } else {
@@ -88,123 +283,6 @@ where {
                 private_root_cid.as_ref().err().unwrap()
             );
             Err(private_root_cid.err().unwrap().to_string())
-        }
-    }
-
-    pub async fn get_root_dir(
-        &mut self,
-        forest: Rc<PrivateForest>,
-        access_key: AccessKey,
-    ) -> Result<Rc<PrivateDirectory>, String> {
-        // Fetch and decrypt root directory from the private forest using provided private ref.
-        // Fetch and decrypt a directory from the private forest using provided private ref.
-        let forest_res = PrivateNode::load(&access_key, &forest, &mut self.store).await;
-        if forest_res.is_ok() {
-            let dir = forest_res.ok().unwrap().as_dir();
-            if dir.is_ok() {
-                Ok(dir.ok().unwrap())
-            } else {
-                trace!(
-                    "wnfsError occured in get_root_dir: {:?}",
-                    dir.as_ref().err().unwrap().to_string()
-                );
-                Err(dir.err().unwrap().to_string())
-            }
-        } else {
-            trace!(
-                "wnfsError occured in get_root_dir: {:?}",
-                forest_res.as_ref().err().unwrap().to_string()
-            );
-            Err(forest_res.err().unwrap().to_string())
-        }
-    }
-
-    pub async fn get_root_dir_with_wnfs_key(
-        &mut self,
-        forest: Rc<PrivateForest>,
-        wnfs_key: Vec<u8>,
-    ) -> Result<Rc<PrivateDirectory>, String> {
-        let ratchet_seed: [u8; 32] = Sha3_256::hash(&wnfs_key);
-        let inumber: [u8; 32] = Sha3_256::hash(&ratchet_seed);
-
-        let fetched_node = Rc::new(PrivateDirectory::with_seed(
-            Namefilter::default(),
-            Utc::now(),
-            ratchet_seed,
-            inumber,
-        ));
-        let tmp_node = fetched_node.search_latest(&forest, &mut self.store).await;
-        if tmp_node.is_ok() {
-            Ok(tmp_node.ok().unwrap())
-        } else {
-            trace!(
-                "wnfsError in get_root_dir_with_key: tmp_node {:?}",
-                tmp_node.as_ref().err().unwrap().to_string()
-            );
-            Err(tmp_node.err().unwrap().to_string())
-        }
-    }
-
-    pub async fn init(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        wnfs_key: Vec<u8>,
-    ) -> Result<(Cid, AccessKey), String> {
-        let ratchet_seed: [u8; 32];
-        let inumber: [u8; 32];
-        if wnfs_key.is_empty() {
-            let wnfs_random_key = AesKey::new(utils::get_random_bytes::<32>(&mut self.rng));
-            ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
-            inumber = utils::get_random_bytes::<32>(&mut self.rng); // Needs to be random
-        } else {
-            ratchet_seed = Sha3_256::hash(&wnfs_key);
-            inumber = Sha3_256::hash(&ratchet_seed);
-        }
-
-        // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
-        let root_dir = &mut PrivateDirectory::new_with_seed_and_store(
-            Namefilter::default(),
-            Utc::now(),
-            ratchet_seed,
-            inumber,
-            forest,
-            &mut self.store,
-            &mut self.rng,
-        )
-        .await;
-
-        if root_dir.is_ok() {
-            // Private ref contains data and keys for fetching and decrypting the directory node in the private forest.
-            let access_key = root_dir
-                .as_ref()
-                .unwrap()
-                .as_node()
-                .store(forest, &mut self.store, &mut self.rng)
-                .await;
-            if access_key.is_ok() {
-                let forest_cid = self.update_forest(forest).await;
-                if forest_cid.is_ok() {
-                    Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
-                } else {
-                    trace!(
-                        "wnfsError in init: {:?}",
-                        forest_cid.as_ref().err().unwrap().to_string()
-                    );
-                    Err(forest_cid.err().unwrap().to_string())
-                }
-            } else {
-                trace!(
-                    "wnfsError in init: {:?}",
-                    access_key.as_ref().err().unwrap().to_string()
-                );
-                Err(access_key.err().unwrap().to_string())
-            }
-        } else {
-            trace!(
-                "wnfsError occured in init: {:?}",
-                root_dir.as_ref().to_owned().err().unwrap().to_string()
-            );
-            Err(root_dir.as_ref().to_owned().err().unwrap().to_string())
         }
     }
 
@@ -237,8 +315,6 @@ where {
 
     pub async fn write_file_from_path(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         filename: &String,
     ) -> Result<(Cid, AccessKey), String> {
@@ -248,13 +324,7 @@ where {
         if try_content.is_ok() {
             (content, modification_time_seconds) = try_content.ok().unwrap();
             let writefile_res = self
-                .write_file(
-                    forest,
-                    root_dir,
-                    path_segments,
-                    content,
-                    modification_time_seconds,
-                )
+                .write_file(path_segments, content, modification_time_seconds)
                 .await;
             if writefile_res.is_ok() {
                 Ok(writefile_res.ok().unwrap())
@@ -308,12 +378,13 @@ where {
 
     pub async fn write_file(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
+
         path_segments: &[String],
         content: Vec<u8>,
         modification_time_seconds: i64,
     ) -> Result<(Cid, AccessKey), String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let mut modification_time_utc: DateTime<Utc> = Utc::now();
         if modification_time_seconds > 0 {
             let naive_datetime =
@@ -338,7 +409,11 @@ where {
                 .store(forest, &mut self.store, &mut self.rng)
                 .await;
             if access_key.is_ok() {
-                let forest_cid = self.update_forest(forest).await;
+                let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                    self.store.to_owned(),
+                    forest.to_owned(),
+                )
+                .await;
                 if forest_cid.is_ok() {
                     Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
                 } else {
@@ -367,11 +442,11 @@ where {
     pub async fn read_filestream_to_path(
         &mut self,
         local_filename: &String,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         index: usize,
     ) -> Result<bool, String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         //let mut stream_content: Vec<u8> = vec![];
         let local_file = File::create(local_filename);
         if local_file.is_ok() {
@@ -431,12 +506,10 @@ where {
 
     pub async fn read_file_to_path(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         filename: &String,
     ) -> Result<String, String> {
-        let file_content_res = self.read_file(forest, root_dir, path_segments).await;
+        let file_content_res = self.read_file(path_segments).await;
         if file_content_res.is_ok() {
             let res = self.write_byte_vec_to_file(filename, file_content_res.ok().unwrap());
             if res.is_ok() {
@@ -457,12 +530,9 @@ where {
         }
     }
 
-    pub async fn read_file(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
-        path_segments: &[String],
-    ) -> Result<Vec<u8>, String> {
+    pub async fn read_file(&mut self, path_segments: &[String]) -> Result<Vec<u8>, String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let res = root_dir
             .read(path_segments, true, forest, &mut self.store)
             .await;
@@ -478,12 +548,9 @@ where {
         }
     }
 
-    pub async fn mkdir(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
-        path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    pub async fn mkdir(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let res = root_dir
             .mkdir(
                 path_segments,
@@ -501,7 +568,11 @@ where {
                 .store(forest, &mut self.store, &mut self.rng)
                 .await;
             if access_key.is_ok() {
-                let forest_cid = self.update_forest(forest).await;
+                let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                    self.store.to_owned(),
+                    forest.to_owned(),
+                )
+                .await;
                 if forest_cid.is_ok() {
                     Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
                 } else {
@@ -527,12 +598,9 @@ where {
         }
     }
 
-    pub async fn rm(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
-        path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    pub async fn rm(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let result = root_dir
             .rm(path_segments, true, forest, &mut self.store)
             .await;
@@ -543,7 +611,11 @@ where {
                 .store(forest, &mut self.store, &mut self.rng)
                 .await;
             if access_key.is_ok() {
-                let forest_cid = self.update_forest(forest).await;
+                let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                    self.store.to_owned(),
+                    forest.to_owned(),
+                )
+                .await;
                 if forest_cid.is_ok() {
                     Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
                 } else {
@@ -571,11 +643,11 @@ where {
 
     pub async fn mv(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         source_path_segments: &[String],
         target_path_segments: &[String],
     ) -> Result<(Cid, AccessKey), String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let mv_result = root_dir
             .basic_mv(
                 source_path_segments,
@@ -594,7 +666,11 @@ where {
                 .store(forest, &mut self.store, &mut self.rng)
                 .await;
             if access_key.is_ok() {
-                let forest_cid = self.update_forest(forest).await;
+                let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                    self.store.to_owned(),
+                    forest.to_owned(),
+                )
+                .await;
                 if forest_cid.is_ok() {
                     Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
                 } else {
@@ -622,11 +698,11 @@ where {
 
     pub async fn cp(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         source_path_segments: &[String],
         target_path_segments: &[String],
     ) -> Result<(Cid, AccessKey), String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let cp_result = root_dir
             .cp(
                 source_path_segments,
@@ -645,7 +721,11 @@ where {
                 .store(forest, &mut self.store, &mut self.rng)
                 .await;
             if access_key.is_ok() {
-                let forest_cid = self.update_forest(forest).await;
+                let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                    self.store.to_owned(),
+                    forest.to_owned(),
+                )
+                .await;
                 if forest_cid.is_ok() {
                     Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
                 } else {
@@ -673,10 +753,10 @@ where {
 
     pub async fn ls_files(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
     ) -> Result<Vec<(String, Metadata)>, String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
         let res = root_dir
             .ls(path_segments, true, forest, &mut self.store)
             .await;
@@ -695,71 +775,56 @@ where {
 
 // Implement synced version of the library for using in android jni.
 impl<'a> PrivateDirectoryHelper<'a> {
-    pub fn synced_create_private_forest(&mut self) -> Result<Cid, String> {
-        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.create_private_forest());
-    }
-
-    pub fn synced_load_forest(&mut self, forest_cid: Cid) -> Result<Rc<PrivateForest>, String> {
-        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.load_forest(forest_cid));
-    }
-
-    pub fn synced_get_root_dir(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        access_key: AccessKey,
-    ) -> Result<Rc<PrivateDirectory>, String> {
-        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.get_root_dir(forest.to_owned(), access_key));
-    }
-
-    pub fn synced_get_root_dir_with_wnfs_key(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        wnfs_key: Vec<u8>,
-    ) -> Result<Rc<PrivateDirectory>, String> {
-        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.get_root_dir_with_wnfs_key(forest.to_owned(), wnfs_key));
-    }
-
     pub fn synced_init(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
+        store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.init(forest, wnfs_key));
+        return runtime.block_on(PrivateDirectoryHelper::init(store, wnfs_key));
+    }
+
+    pub fn synced_load_with_wnfs_key(
+        &mut self,
+        store: &mut FFIFriendlyBlockStore<'a>,
+        forest_cid: Cid,
+        wnfs_key: Vec<u8>,
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+        return runtime.block_on(PrivateDirectoryHelper::load_with_wnfs_key(
+            store, forest_cid, wnfs_key,
+        ));
+    }
+
+    pub fn synced_load_with_access_key(
+        &mut self,
+        store: &mut FFIFriendlyBlockStore<'a>,
+        forest_cid: Cid,
+        access_key: AccessKey,
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+        return runtime.block_on(PrivateDirectoryHelper::load_with_access_key(
+            store, forest_cid, access_key,
+        ));
     }
 
     pub fn synced_write_file_from_path(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         filename: &String,
     ) -> Result<(Cid, AccessKey), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.write_file_from_path(
-            forest,
-            root_dir,
-            path_segments,
-            filename,
-        ));
+        return runtime.block_on(self.write_file_from_path(path_segments, filename));
     }
 
     pub fn synced_write_file(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         content: Vec<u8>,
         modification_time_seconds: i64,
     ) -> Result<(Cid, AccessKey), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.write_file(
-            forest,
-            root_dir,
             path_segments,
             content,
             modification_time_seconds,
@@ -768,103 +833,66 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
     pub fn synced_read_file_to_path(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         filename: &String,
     ) -> Result<String, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.read_file_to_path(forest, root_dir, path_segments, filename));
+        return runtime.block_on(self.read_file_to_path(path_segments, filename));
     }
 
-    pub fn synced_read_file(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
-        path_segments: &[String],
-    ) -> Result<Vec<u8>, String> {
+    pub fn synced_read_file(&mut self, path_segments: &[String]) -> Result<Vec<u8>, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.read_file(forest, root_dir, path_segments));
+        return runtime.block_on(self.read_file(path_segments));
     }
 
     pub fn synced_read_filestream_to_path(
         &mut self,
         local_filename: &String,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
         index: usize,
     ) -> Result<bool, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.read_filestream_to_path(
             local_filename,
-            forest,
-            root_dir,
             path_segments,
             index,
         ));
     }
 
-    pub fn synced_mkdir(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
-        path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    pub fn synced_mkdir(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.mkdir(forest, root_dir, path_segments));
+        return runtime.block_on(self.mkdir(path_segments));
     }
 
     pub fn synced_mv(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         source_path_segments: &[String],
         target_path_segments: &[String],
     ) -> Result<(Cid, AccessKey), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.mv(
-            forest,
-            root_dir,
-            source_path_segments,
-            target_path_segments,
-        ));
+        return runtime.block_on(self.mv(source_path_segments, target_path_segments));
     }
 
     pub fn synced_cp(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         source_path_segments: &[String],
         target_path_segments: &[String],
     ) -> Result<(Cid, AccessKey), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.cp(
-            forest,
-            root_dir,
-            source_path_segments,
-            target_path_segments,
-        ));
+        return runtime.block_on(self.cp(source_path_segments, target_path_segments));
     }
 
-    pub fn synced_rm(
-        &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
-        path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    pub fn synced_rm(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.rm(forest, root_dir, path_segments));
+        return runtime.block_on(self.rm(path_segments));
     }
 
     pub fn synced_ls_files(
         &mut self,
-        forest: &mut Rc<PrivateForest>,
-        root_dir: &mut Rc<PrivateDirectory>,
         path_segments: &[String],
     ) -> Result<Vec<(String, Metadata)>, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(self.ls_files(forest, root_dir, path_segments));
+        return runtime.block_on(self.ls_files(path_segments));
     }
 
     pub fn parse_path(path: String) -> Vec<String> {
@@ -878,6 +906,8 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
 #[cfg(test)]
 mod private_tests {
+
+    use std::rc::Rc;
 
     use wnfs::common::CODEC_DAG_CBOR;
 
@@ -898,22 +928,16 @@ mod private_tests {
     async fn iboverall() {
         let empty_key: Vec<u8> = vec![0; 32];
         let store = KVBlockStore::new(String::from("./tmp/test2"), CODEC_DAG_CBOR);
-        let blockstore = FFIFriendlyBlockStore::new(Box::new(store));
-        let helper = &mut PrivateDirectoryHelper::new(blockstore);
-        let forest_cid = helper.create_private_forest().await.unwrap();
-        println!("cid: {:?}", forest_cid);
-        let forest = &mut helper.load_forest(forest_cid).await.unwrap();
-        let (cid, access_key) = helper.init(forest, empty_key.to_owned()).await.unwrap();
-        let root_dir = &mut helper
-            .get_root_dir(forest.to_owned(), access_key.to_owned())
-            .await
-            .unwrap();
+        let blockstore = &mut FFIFriendlyBlockStore::new(Rc::new(store));
+        let (helper, access_key, cid) =
+            &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
+                .await
+                .unwrap();
+
         println!("cid: {:?}", cid);
         println!("access_key: {:?}", access_key.to_owned());
         let (cid, access_key) = helper
             .write_file(
-                forest,
-                root_dir,
                 &["root".into(), "hello".into(), "world.txt".into()],
                 b"hello, world!".to_vec(),
                 0,
@@ -922,45 +946,27 @@ mod private_tests {
             .unwrap();
         println!("cid: {:?}", cid);
         println!("access_key: {:?}", access_key);
-        let ls_result = helper.ls_files(forest, root_dir, &["root".into()]).await;
+        let ls_result = helper.ls_files(&["root".into()]).await;
         println!("ls: {:?}", ls_result);
-        let (cid, access_key) = helper
-            .mkdir(forest, root_dir, &["root".into(), "hi".into()])
-            .await
-            .unwrap();
+        let (cid, access_key) = helper.mkdir(&["root".into(), "hi".into()]).await.unwrap();
         println!("cid: {:?}", cid);
         println!("access_key: {:?}", access_key);
-        let ls_result = helper
-            .ls_files(forest, root_dir, &["root".into()])
-            .await
-            .unwrap();
+        let ls_result = helper.ls_files(&["root".into()]).await.unwrap();
         assert_eq!(ls_result.get(0).unwrap().0, "hello");
         assert_eq!(ls_result.get(1).unwrap().0, "hi");
         let content = helper
-            .read_file(
-                forest,
-                root_dir,
-                &["root".into(), "hello".into(), "world.txt".into()],
-            )
+            .read_file(&["root".into(), "hello".into(), "world.txt".into()])
             .await
             .unwrap();
         assert_eq!(content, b"hello, world!".to_vec());
         let (cid, access_key) = helper
-            .rm(
-                forest,
-                root_dir,
-                &["root".into(), "hello".into(), "world.txt".into()],
-            )
+            .rm(&["root".into(), "hello".into(), "world.txt".into()])
             .await
             .unwrap();
         println!("cid: {:?}", cid);
         println!("access_key: {:?}", access_key.to_owned());
         let content = helper
-            .read_file(
-                forest,
-                root_dir,
-                &["root".into(), "hello".into(), "world.txt".into()],
-            )
+            .read_file(&["root".into(), "hello".into(), "world.txt".into()])
             .await;
         assert_eq!(content.ok(), None);
         // let last_root_dir = helper
@@ -977,12 +983,11 @@ mod private_tests {
     async fn serialize_access_key() {
         let empty_key: Vec<u8> = vec![0; 32];
         let store = KVBlockStore::new(String::from("./tmp/test3"), CODEC_DAG_CBOR);
-        let blockstore = FFIFriendlyBlockStore::new(Box::new(store));
-        let helper = &mut PrivateDirectoryHelper::new(blockstore);
-        let forest_cid = helper.create_private_forest().await.unwrap();
-        println!("cid: {:?}", forest_cid);
-        let forest = &mut helper.load_forest(forest_cid).await.unwrap();
-        let (_, access_key) = helper.init(forest, empty_key.to_owned()).await.unwrap();
+        let blockstore = &mut FFIFriendlyBlockStore::new(Rc::new(store));
+        let (_, access_key, cid) = PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
+            .await
+            .unwrap();
+        println!("cid: {:?}", cid);
         let access_key_serialized = serde_json::to_string(&access_key).unwrap();
         println!("private ref: \n{}", access_key_serialized);
     }
