@@ -10,6 +10,7 @@ use std::{
     io::{Read, Write},
     os::unix::fs::MetadataExt,
     rc::Rc,
+    sync::Mutex,
 };
 use wnfs::{common::Metadata, private::AesKey};
 use wnfs::{
@@ -25,6 +26,22 @@ use sha3::Sha3_256;
 
 use crate::blockstore::FFIFriendlyBlockStore;
 
+#[derive(Clone)]
+struct State {
+    initialized: bool,
+    wnfs_key: Vec<u8>,
+}
+impl State {
+    fn update(&mut self, initialized: bool, wnfs_key: Vec<u8>) {
+        self.initialized = initialized;
+        self.wnfs_key = wnfs_key;
+    }
+}
+static mut STATE: Mutex<State> = Mutex::new(State {
+    initialized: false,
+    wnfs_key: Vec::new(),
+});
+
 pub struct PrivateDirectoryHelper<'a> {
     pub store: FFIFriendlyBlockStore<'a>,
     forest: Rc<PrivateForest>,
@@ -36,6 +53,33 @@ pub struct PrivateDirectoryHelper<'a> {
 // TODO: we assumed all the write, mkdirs use same roots here. this could be done using prepend
 // a root path to all path segments.
 impl<'a> PrivateDirectoryHelper<'a> {
+    async fn reload(
+        store: &mut FFIFriendlyBlockStore<'a>,
+        cid: Cid,
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+        let initialized: bool;
+        let wnfs_key: Vec<u8>;
+        unsafe {
+            initialized = STATE.lock().unwrap().initialized;
+            wnfs_key = STATE.lock().unwrap().wnfs_key.to_owned();
+        }
+        if initialized {
+            let helper_res =
+                PrivateDirectoryHelper::load_with_wnfs_key(store, cid, wnfs_key.to_owned()).await;
+            if helper_res.is_ok() {
+                Ok(helper_res.ok().unwrap())
+            } else {
+                trace!(
+                    "wnfsError in new: {:?}",
+                    helper_res.as_ref().err().unwrap().to_string()
+                );
+                Err(helper_res.err().unwrap().to_string())
+            }
+        } else {
+            Err("PrivateDirectoryHelper not initialized".into())
+        }
+    }
+
     async fn init(
         store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
@@ -79,6 +123,9 @@ impl<'a> PrivateDirectoryHelper<'a> {
                     )
                     .await;
                     if forest_cid.is_ok() {
+                        unsafe {
+                            STATE.lock().unwrap().update(true, wnfs_key.to_owned());
+                        }
                         Ok((
                             PrivateDirectoryHelper {
                                 store: store.to_owned(),
@@ -153,6 +200,9 @@ impl<'a> PrivateDirectoryHelper<'a> {
             if root_dir.is_ok() {
                 let latest_root_dir = root_dir.unwrap().search_latest(forest, store).await;
                 if latest_root_dir.is_ok() {
+                    unsafe {
+                        STATE.lock().unwrap().update(true, wnfs_key.to_owned());
+                    }
                     Ok(PrivateDirectoryHelper {
                         store: store.to_owned(),
                         forest: forest.to_owned(),
@@ -317,7 +367,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         &mut self,
         path_segments: &[String],
         filename: &String,
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let content: Vec<u8>;
         let modification_time_seconds: i64;
         let try_content = self.get_file_as_byte_vec(filename);
@@ -382,7 +432,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         path_segments: &[String],
         content: Vec<u8>,
         modification_time_seconds: i64,
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let forest = &mut self.forest;
         let root_dir = &mut self.root_dir;
         let mut modification_time_utc: DateTime<Utc> = Utc::now();
@@ -415,7 +465,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if forest_cid.is_ok() {
-                    Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
+                    Ok(forest_cid.ok().unwrap())
                 } else {
                     trace!(
                         "wnfsError in write_file: {:?}",
@@ -548,7 +598,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         }
     }
 
-    pub async fn mkdir(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
+    pub async fn mkdir(&mut self, path_segments: &[String]) -> Result<Cid, String> {
         let forest = &mut self.forest;
         let root_dir = &mut self.root_dir;
         let res = root_dir
@@ -574,7 +624,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if forest_cid.is_ok() {
-                    Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
+                    Ok(forest_cid.ok().unwrap())
                 } else {
                     trace!(
                         "wnfsError in mkdir: {:?}",
@@ -598,7 +648,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         }
     }
 
-    pub async fn rm(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
+    pub async fn rm(&mut self, path_segments: &[String]) -> Result<Cid, String> {
         let forest = &mut self.forest;
         let root_dir = &mut self.root_dir;
         let result = root_dir
@@ -617,7 +667,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if forest_cid.is_ok() {
-                    Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
+                    Ok(forest_cid.ok().unwrap())
                 } else {
                     trace!(
                         "wnfsError in result: {:?}",
@@ -645,7 +695,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         &mut self,
         source_path_segments: &[String],
         target_path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let forest = &mut self.forest;
         let root_dir = &mut self.root_dir;
         let mv_result = root_dir
@@ -672,7 +722,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if forest_cid.is_ok() {
-                    Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
+                    Ok(forest_cid.ok().unwrap())
                 } else {
                     trace!(
                         "wnfsError in mv_result: {:?}",
@@ -700,7 +750,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         &mut self,
         source_path_segments: &[String],
         target_path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let forest = &mut self.forest;
         let root_dir = &mut self.root_dir;
         let cp_result = root_dir
@@ -727,7 +777,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if forest_cid.is_ok() {
-                    Ok((forest_cid.ok().unwrap(), access_key.ok().unwrap()))
+                    Ok(forest_cid.ok().unwrap())
                 } else {
                     trace!(
                         "wnfsError in cp_result: {:?}",
@@ -776,7 +826,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
 // Implement synced version of the library for using in android jni.
 impl<'a> PrivateDirectoryHelper<'a> {
     pub fn synced_init(
-        &mut self,
         store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
     ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
@@ -785,7 +834,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     pub fn synced_load_with_wnfs_key(
-        &mut self,
         store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
         wnfs_key: Vec<u8>,
@@ -796,23 +844,30 @@ impl<'a> PrivateDirectoryHelper<'a> {
         ));
     }
 
-    pub fn synced_load_with_access_key(
-        &mut self,
+    // pub fn synced_load_with_access_key(
+    //     store: &mut FFIFriendlyBlockStore<'a>,
+    //     forest_cid: Cid,
+    //     wnfs_key: Vec<u8>,
+    // ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    //     let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+    //     return runtime.block_on(PrivateDirectoryHelper::load_with_wnfs_key(
+    //         store, forest_cid, wnfs_key,
+    //     ));
+    // }
+
+    pub fn synced_reload(
         store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
-        access_key: AccessKey,
     ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(PrivateDirectoryHelper::load_with_access_key(
-            store, forest_cid, access_key,
-        ));
+        return runtime.block_on(PrivateDirectoryHelper::reload(store, forest_cid));
     }
 
     pub fn synced_write_file_from_path(
         &mut self,
         path_segments: &[String],
         filename: &String,
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.write_file_from_path(path_segments, filename));
     }
@@ -822,7 +877,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         path_segments: &[String],
         content: Vec<u8>,
         modification_time_seconds: i64,
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.write_file(
             path_segments,
@@ -859,7 +914,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         ));
     }
 
-    pub fn synced_mkdir(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
+    pub fn synced_mkdir(&mut self, path_segments: &[String]) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.mkdir(path_segments));
     }
@@ -868,7 +923,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         &mut self,
         source_path_segments: &[String],
         target_path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.mv(source_path_segments, target_path_segments));
     }
@@ -877,12 +932,12 @@ impl<'a> PrivateDirectoryHelper<'a> {
         &mut self,
         source_path_segments: &[String],
         target_path_segments: &[String],
-    ) -> Result<(Cid, AccessKey), String> {
+    ) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.cp(source_path_segments, target_path_segments));
     }
 
-    pub fn synced_rm(&mut self, path_segments: &[String]) -> Result<(Cid, AccessKey), String> {
+    pub fn synced_rm(&mut self, path_segments: &[String]) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.rm(path_segments));
     }
@@ -911,10 +966,9 @@ mod private_tests {
 
     use wnfs::common::CODEC_DAG_CBOR;
 
-    use crate::{
-        blockstore::FFIFriendlyBlockStore, kvstore::KVBlockStore,
-        private_forest::PrivateDirectoryHelper,
-    };
+    use crate::blockstore::FFIFriendlyBlockStore;
+    use crate::kvstore::KVBlockStore;
+    use crate::private_forest::PrivateDirectoryHelper;
 
     #[tokio::test]
     async fn test_parse_path() {
@@ -936,7 +990,7 @@ mod private_tests {
 
         println!("cid: {:?}", cid);
         println!("access_key: {:?}", access_key.to_owned());
-        let (cid, access_key) = helper
+        let cid = helper
             .write_file(
                 &["root".into(), "hello".into(), "world.txt".into()],
                 b"hello, world!".to_vec(),
@@ -948,7 +1002,7 @@ mod private_tests {
         println!("access_key: {:?}", access_key);
         let ls_result = helper.ls_files(&["root".into()]).await;
         println!("ls: {:?}", ls_result);
-        let (cid, access_key) = helper.mkdir(&["root".into(), "hi".into()]).await.unwrap();
+        let cid = helper.mkdir(&["root".into(), "hi".into()]).await.unwrap();
         println!("cid: {:?}", cid);
         println!("access_key: {:?}", access_key);
         let ls_result = helper.ls_files(&["root".into()]).await.unwrap();
@@ -959,7 +1013,7 @@ mod private_tests {
             .await
             .unwrap();
         assert_eq!(content, b"hello, world!".to_vec());
-        let (cid, access_key) = helper
+        let cid = helper
             .rm(&["root".into(), "hello".into(), "world.txt".into()])
             .await
             .unwrap();
