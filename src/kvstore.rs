@@ -7,6 +7,7 @@ use wnfs::common::BlockStoreError;
 
 use crate::blockstore::FFIStore;
 
+#[derive(Clone)]
 pub struct KVBlockStore {
     pub store: Store,
     pub codec: u64,

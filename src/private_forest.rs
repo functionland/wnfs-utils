@@ -962,8 +962,6 @@ impl PrivateDirectoryHelper {
 #[cfg(test)]
 mod private_tests {
 
-    use std::rc::Rc;
-
     use wnfs::common::CODEC_DAG_CBOR;
 
     use crate::blockstore::FFIFriendlyBlockStore;
@@ -982,7 +980,7 @@ mod private_tests {
     async fn iboverall() {
         let empty_key: Vec<u8> = vec![0; 32];
         let store = KVBlockStore::new(String::from("./tmp/test2"), CODEC_DAG_CBOR);
-        let blockstore = &mut FFIFriendlyBlockStore::new(Rc::new(store));
+        let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
         let (helper, access_key, cid) =
             &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
                 .await
@@ -1037,7 +1035,7 @@ mod private_tests {
     async fn serialize_access_key() {
         let empty_key: Vec<u8> = vec![0; 32];
         let store = KVBlockStore::new(String::from("./tmp/test3"), CODEC_DAG_CBOR);
-        let blockstore = &mut FFIFriendlyBlockStore::new(Rc::new(store));
+        let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
         let (_, access_key, cid) = PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
             .await
             .unwrap();
