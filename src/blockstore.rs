@@ -7,29 +7,29 @@ use bytes::Bytes;
 use libipld::Cid;
 use wnfs::common::{BlockStore, BlockStoreError};
 
-pub trait FFIStore<'a> {
-    fn get_block<'b>(&'b self, cid: Vec<u8>) -> Result<Vec<u8>>;
-    fn put_block<'b>(&'b self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()>;
+pub trait FFIStore {
+    fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>>;
+    fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()>;
 }
 
 #[derive(Clone)]
-pub struct FFIFriendlyBlockStore<'a> {
-    pub ffi_store: Rc<dyn FFIStore<'a>>,
+pub struct FFIFriendlyBlockStore {
+    pub ffi_store: Rc<dyn FFIStore>,
 }
 
 //--------------------------------------------------------------------------------------------------
 // Implementations
 //--------------------------------------------------------------------------------------------------
 
-impl<'a> FFIFriendlyBlockStore<'a> {
+impl FFIFriendlyBlockStore {
     /// Creates a new kv block store.
-    pub fn new(ffi_store: Rc<dyn FFIStore<'a>>) -> Self {
+    pub fn new(ffi_store: Rc<dyn FFIStore>) -> Self {
         Self { ffi_store }
     }
 }
 
 #[async_trait(?Send)]
-impl<'b> BlockStore for FFIFriendlyBlockStore<'b> {
+impl BlockStore for FFIFriendlyBlockStore {
     /// Retrieves an array of bytes from the block store with given CID.
     async fn get_block(&self, cid: &Cid) -> Result<Bytes> {
         let bytes = self

@@ -42,8 +42,8 @@ static mut STATE: Mutex<State> = Mutex::new(State {
     wnfs_key: Vec::new(),
 });
 
-pub struct PrivateDirectoryHelper<'a> {
-    pub store: FFIFriendlyBlockStore<'a>,
+pub struct PrivateDirectoryHelper {
+    pub store: FFIFriendlyBlockStore,
     forest: Rc<PrivateForest>,
     root_dir: Rc<PrivateDirectory>,
     rng: ThreadRng,
@@ -52,11 +52,11 @@ pub struct PrivateDirectoryHelper<'a> {
 // Single root (private ref) implementation of the wnfs private directory using KVBlockStore.
 // TODO: we assumed all the write, mkdirs use same roots here. this could be done using prepend
 // a root path to all path segments.
-impl<'a> PrivateDirectoryHelper<'a> {
+impl<'a> PrivateDirectoryHelper {
     async fn reload(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         cid: Cid,
-    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    ) -> Result<PrivateDirectoryHelper, String> {
         let initialized: bool;
         let wnfs_key: Vec<u8>;
         unsafe {
@@ -81,9 +81,9 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     async fn init(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         wnfs_key: Vec<u8>,
-    ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
+    ) -> Result<(PrivateDirectoryHelper, AccessKey, Cid), String> {
         let rng = &mut thread_rng();
         let ratchet_seed: [u8; 32];
         let inumber: [u8; 32];
@@ -165,10 +165,10 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     pub async fn load_with_wnfs_key(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         forest_cid: Cid,
         wnfs_key: Vec<u8>,
-    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    ) -> Result<PrivateDirectoryHelper, String> {
         let rng = &mut thread_rng();
         let ratchet_seed: [u8; 32];
         let inumber: [u8; 32];
@@ -231,10 +231,10 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     pub async fn load_with_access_key(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         forest_cid: Cid,
         access_key: AccessKey,
-    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    ) -> Result<PrivateDirectoryHelper, String> {
         let rng = thread_rng();
 
         let forest_res =
@@ -283,7 +283,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     async fn create_private_forest(
-        store: FFIFriendlyBlockStore<'a>,
+        store: FFIFriendlyBlockStore,
     ) -> Result<(Rc<PrivateForest>, Cid), String> {
         // Create the private forest (a HAMT), a map-like structure where file and directory ciphertexts are stored.
         let forest = Rc::new(PrivateForest::new());
@@ -302,7 +302,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     async fn load_private_forest(
-        store: FFIFriendlyBlockStore<'a>,
+        store: FFIFriendlyBlockStore,
         forest_cid: Cid,
     ) -> Result<Rc<PrivateForest>, String> {
         // Deserialize private forest from the blockstore.
@@ -319,7 +319,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     pub async fn update_private_forest(
-        store: FFIFriendlyBlockStore<'a>,
+        store: FFIFriendlyBlockStore,
         forest: Rc<PrivateForest>,
     ) -> Result<Cid, String> {
         // Serialize the private forest to DAG CBOR.
@@ -824,20 +824,20 @@ impl<'a> PrivateDirectoryHelper<'a> {
 }
 
 // Implement synced version of the library for using in android jni.
-impl<'a> PrivateDirectoryHelper<'a> {
+impl PrivateDirectoryHelper {
     pub fn synced_init(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         wnfs_key: Vec<u8>,
-    ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
+    ) -> Result<(PrivateDirectoryHelper, AccessKey, Cid), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(PrivateDirectoryHelper::init(store, wnfs_key));
     }
 
     pub fn synced_load_with_wnfs_key(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         forest_cid: Cid,
         wnfs_key: Vec<u8>,
-    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    ) -> Result<PrivateDirectoryHelper, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(PrivateDirectoryHelper::load_with_wnfs_key(
             store, forest_cid, wnfs_key,
@@ -848,7 +848,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     //     store: &mut FFIFriendlyBlockStore<'a>,
     //     forest_cid: Cid,
     //     wnfs_key: Vec<u8>,
-    // ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    // ) -> Result<PrivateDirectoryHelper, String> {
     //     let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
     //     return runtime.block_on(PrivateDirectoryHelper::load_with_wnfs_key(
     //         store, forest_cid, wnfs_key,
@@ -856,9 +856,9 @@ impl<'a> PrivateDirectoryHelper<'a> {
     // }
 
     pub fn synced_reload(
-        store: &mut FFIFriendlyBlockStore<'a>,
+        store: &mut FFIFriendlyBlockStore,
         forest_cid: Cid,
-    ) -> Result<PrivateDirectoryHelper<'a>, String> {
+    ) -> Result<PrivateDirectoryHelper, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(PrivateDirectoryHelper::reload(store, forest_cid));
     }
