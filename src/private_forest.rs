@@ -92,18 +92,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
         }
     }
 
-    async fn root_dir_setup(store: &impl BlockStore) -> Result<(Rc<PrivateForest>, AccessKey)> {
-        // We generate a new simple example file system:
-        let rng = &mut rand::thread_rng();
-        let forest = &mut Rc::new(PrivateForest::new());
-        let root_dir =
-            &mut PrivateDirectory::new_and_store(Default::default(), Utc::now(), forest, store, rng)
-                .await?;
-
-        // And finally we return the forest and the root directory's access key
-        let access_key = root_dir.as_node().store(forest, store, rng).await?;
-        Ok((Rc::clone(forest), access_key))
-    }
     async fn setup_seeded_keypair_access(
         forest: &mut Rc<PrivateForest>,
         access_key: AccessKey,
@@ -185,6 +173,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     async fn init(
         store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
+        root_did: &str,
     ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
         let rng = &mut thread_rng();
         let ratchet_seed: [u8; 32];
@@ -228,16 +217,33 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         unsafe {
                             STATE.lock().unwrap().update(true, wnfs_key.to_owned());
                         }
-                        Ok((
-                            Self {
-                                store: store.to_owned(),
-                                forest: forest.to_owned(),
-                                root_dir: root_dir.to_owned(),
-                                rng: rng.to_owned(),
-                            },
-                            access_key.ok().unwrap(),
-                            forest_cid.unwrap(),
-                        ))
+                        let seed: [u8; 32] = wnfs_key.try_into().expect("Length mismatch");
+                        let access_key_unwrapped = access_key.ok().unwrap();
+                        let seed_res = Self::setup_seeded_keypair_access(
+                            forest,
+                            access_key_unwrapped.to_owned(),
+                            store,
+                            seed,
+                            root_did,
+                        ).await;
+                        if seed_res.is_ok() {
+                            Ok((
+                                Self {
+                                    store: store.to_owned(),
+                                    forest: forest.to_owned(),
+                                    root_dir: root_dir.to_owned(),
+                                    rng: rng.to_owned(),
+                                },
+                                access_key_unwrapped,
+                                forest_cid.unwrap(),
+                            ))
+                        } else {
+                            trace!(
+                                "wnfsError in init:setup_seeded_keypair_access : {:?}",
+                                seed_res.as_ref().err().unwrap().to_string()
+                            );
+                            Err(seed_res.err().unwrap().to_string())
+                        }
                     } else {
                         trace!(
                             "wnfsError in init: {:?}",
@@ -930,9 +936,10 @@ impl<'a> PrivateDirectoryHelper<'a> {
     pub fn synced_init(
         store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
+        root_did: &str,
     ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        return runtime.block_on(PrivateDirectoryHelper::init(store, wnfs_key));
+        return runtime.block_on(PrivateDirectoryHelper::init(store, wnfs_key, root_did));
     }
 
     pub fn synced_load_with_wnfs_key(
@@ -1129,7 +1136,7 @@ mod private_tests {
         let store = KVBlockStore::new(String::from("./tmp/test2"), CODEC_DAG_CBOR);
         let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
         let (helper, access_key, cid) =
-            &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
+            &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned(), "did:key:xxxxx")
                 .await
                 .unwrap();
 
@@ -1183,7 +1190,7 @@ mod private_tests {
         let empty_key: Vec<u8> = vec![0; 32];
         let store = KVBlockStore::new(String::from("./tmp/test3"), CODEC_DAG_CBOR);
         let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
-        let (_, access_key, cid) = PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
+        let (_, access_key, cid) = PrivateDirectoryHelper::init(blockstore, empty_key.to_owned(), "did:key:xxxxx")
             .await
             .unwrap();
         println!("cid: {:?}", cid);
