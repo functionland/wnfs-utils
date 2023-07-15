@@ -11,6 +11,7 @@ use std::{
     os::unix::fs::MetadataExt,
     rc::Rc,
     sync::Mutex,
+    time::SystemTime,
 };
 use wnfs::{common::Metadata, private::AesKey};
 use wnfs::{
@@ -25,6 +26,8 @@ use log::trace;
 use sha3::Sha3_256;
 
 use crate::blockstore::FFIFriendlyBlockStore;
+use tokio::fs::File as TokioFile;
+use tokio::io::Result as IoResult;
 
 #[derive(Clone)]
 struct State {
@@ -394,6 +397,60 @@ impl<'a> PrivateDirectoryHelper<'a> {
         }
     }
 
+    // The new get_file_as_stream method:
+    pub async fn get_file_as_stream(&self, filename: &String) -> IoResult<(TokioFile, i64)> {
+        let file = TokioFile::open(filename).await?;
+        let metadata = tokio::fs::metadata(filename).await?;
+        let modified = metadata
+            .modified()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let modification_time_seconds = modified
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .as_secs() as i64;
+
+        Ok((file, modification_time_seconds))
+    }
+
+    pub async fn write_file_stream_from_path(
+        &mut self,
+        path_segments: &[String],
+        filename: &String,
+    ) -> Result<Cid, String> {
+        let filedata = async_std::fs::File::open(filename).await;
+        if let Ok(file) = filedata {
+            let metadata = file.metadata().await;
+            if metadata.is_err() {
+                return Err(format!(
+                    "Failed to get file metadata: {:?}",
+                    metadata.err().unwrap()
+                ));
+            }
+            let modification_time_seconds = metadata
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let mut reader = async_std::io::BufReader::new(file);
+            let writefile_res = self
+                .write_file_stream(path_segments, &mut reader, modification_time_seconds)
+                .await;
+            match writefile_res {
+                Ok(res) => Ok(res),
+                Err(e) => {
+                    trace!("wnfsError in write_file_stream_from_path: {:?}", e);
+                    Err(e.to_string())
+                }
+            }
+        } else {
+            let e = filedata.err().unwrap();
+            trace!("wnfsError in write_file_stream_from_path: {:?}", e);
+            Err(e.to_string())
+        }
+    }
+
     fn write_byte_vec_to_file(
         &mut self,
         filename: &String,
@@ -486,6 +543,87 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 write_res.as_ref().err().unwrap().to_string()
             );
             Err(write_res.err().unwrap().to_string())
+        }
+    }
+
+    pub async fn write_file_stream(
+        &mut self,
+
+        path_segments: &[String],
+        mut content: &mut async_std::io::BufReader<async_std::fs::File>,
+        modification_time_seconds: i64,
+    ) -> Result<Cid, String> {
+        let forest = &mut self.forest;
+        let root_dir = &mut self.root_dir;
+        let mut modification_time_utc: DateTime<Utc> = Utc::now();
+        if modification_time_seconds > 0 {
+            let naive_datetime =
+                NaiveDateTime::from_timestamp_opt(modification_time_seconds, 0).unwrap();
+            modification_time_utc = DateTime::from_utc(naive_datetime, Utc);
+        }
+
+        let file_open_res = root_dir
+            .open_file_mut(
+                path_segments,
+                true,
+                modification_time_utc,
+                forest,
+                &mut self.store,
+                &mut self.rng,
+            )
+            .await;
+        if file_open_res.is_ok() {
+            let file = file_open_res.unwrap();
+            let write_res = file
+                .set_content(
+                    modification_time_utc,
+                    &mut content,
+                    forest,
+                    &mut self.store,
+                    &mut self.rng,
+                )
+                .await;
+            if write_res.is_ok() {
+                // Private ref contains data and keys for fetching and decrypting the directory node in the private forest.
+                let access_key = root_dir
+                    .as_node()
+                    .store(forest, &mut self.store, &mut self.rng)
+                    .await;
+                if access_key.is_ok() {
+                    let forest_cid = PrivateDirectoryHelper::update_private_forest(
+                        self.store.to_owned(),
+                        forest.to_owned(),
+                    )
+                    .await;
+                    if forest_cid.is_ok() {
+                        Ok(forest_cid.ok().unwrap())
+                    } else {
+                        trace!(
+                            "wnfsError in write_file: {:?}",
+                            forest_cid.as_ref().err().unwrap().to_string()
+                        );
+                        Err(forest_cid.err().unwrap().to_string())
+                    }
+                } else {
+                    trace!(
+                        "wnfsError in write_file: {:?}",
+                        access_key.as_ref().err().unwrap().to_string()
+                    );
+                    Err(access_key.err().unwrap().to_string())
+                }
+            } else {
+                trace!(
+                    "wnfsError in write_file: {:?}",
+                    write_res.as_ref().err().unwrap().to_string()
+                );
+                Err(write_res.err().unwrap().to_string())
+            }
+        } else {
+            trace!(
+                "wnfsError in write_file_stream: {:?}",
+                file_open_res.as_ref().err().unwrap().to_string()
+            );
+            Err(file_open_res.err().unwrap().to_string())
         }
     }
 
@@ -870,6 +1008,15 @@ impl<'a> PrivateDirectoryHelper<'a> {
     ) -> Result<Cid, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(self.write_file_from_path(path_segments, filename));
+    }
+
+    pub fn synced_write_file_stream_from_path(
+        &mut self,
+        path_segments: &[String],
+        filename: &String,
+    ) -> Result<Cid, String> {
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+        return runtime.block_on(self.write_file_stream_from_path(path_segments, filename));
     }
 
     pub fn synced_write_file(
