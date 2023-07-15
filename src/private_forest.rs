@@ -11,7 +11,7 @@ use std::{
     os::unix::fs::MetadataExt,
     rc::Rc,
     sync::Mutex,
-    time::SystemTime
+    time::SystemTime,
 };
 use wnfs::{common::Metadata, private::AesKey};
 use wnfs::{
@@ -401,9 +401,13 @@ impl<'a> PrivateDirectoryHelper<'a> {
     pub async fn get_file_as_stream(&self, filename: &String) -> IoResult<(TokioFile, i64)> {
         let file = TokioFile::open(filename).await?;
         let metadata = tokio::fs::metadata(filename).await?;
-        let modified = metadata.modified().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let modification_time_seconds = modified.duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.as_secs() as i64;
+        let modified = metadata
+            .modified()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let modification_time_seconds = modified
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .as_secs() as i64;
 
         Ok((file, modification_time_seconds))
     }
@@ -417,7 +421,10 @@ impl<'a> PrivateDirectoryHelper<'a> {
         if let Ok(file) = filedata {
             let metadata = file.metadata().await;
             if metadata.is_err() {
-                return Err(format!("Failed to get file metadata: {:?}", metadata.err().unwrap()));
+                return Err(format!(
+                    "Failed to get file metadata: {:?}",
+                    metadata.err().unwrap()
+                ));
             }
             let modification_time_seconds = metadata
                 .unwrap()
@@ -428,32 +435,21 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 .as_secs() as i64;
             let mut reader = async_std::io::BufReader::new(file);
             let writefile_res = self
-                .write_file_stream(
-                    path_segments,
-                    &mut reader,
-                    modification_time_seconds
-                )
+                .write_file_stream(path_segments, &mut reader, modification_time_seconds)
                 .await;
             match writefile_res {
                 Ok(res) => Ok(res),
                 Err(e) => {
-                    trace!(
-                        "wnfsError in write_file_stream_from_path: {:?}",
-                        e
-                    );
+                    trace!("wnfsError in write_file_stream_from_path: {:?}", e);
                     Err(e.to_string())
-                },
+                }
             }
         } else {
             let e = filedata.err().unwrap();
-            trace!(
-                "wnfsError in write_file_stream_from_path: {:?}",
-                e
-            );
+            trace!("wnfsError in write_file_stream_from_path: {:?}", e);
             Err(e.to_string())
         }
     }
-    
 
     fn write_byte_vec_to_file(
         &mut self,
@@ -568,24 +564,25 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
         let file_open_res = root_dir
             .open_file_mut(
-                path_segments, 
-                true, 
-                modification_time_utc, 
-                forest, 
-                &mut self.store, 
-                &mut self.rng
+                path_segments,
+                true,
+                modification_time_utc,
+                forest,
+                &mut self.store,
+                &mut self.rng,
             )
             .await;
         if file_open_res.is_ok() {
             let file = file_open_res.unwrap();
-            let write_res = file.set_content(
-                modification_time_utc, 
-                &mut content, 
-                forest, 
-                &mut self.store, 
-                &mut self.rng
-            )
-            .await;
+            let write_res = file
+                .set_content(
+                    modification_time_utc,
+                    &mut content,
+                    forest,
+                    &mut self.store,
+                    &mut self.rng,
+                )
+                .await;
             if write_res.is_ok() {
                 // Private ref contains data and keys for fetching and decrypting the directory node in the private forest.
                 let access_key = root_dir
