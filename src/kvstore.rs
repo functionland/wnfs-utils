@@ -29,7 +29,7 @@ impl KVBlockStore {
     }
 }
 
-impl<'a> FFIStore<'a> for KVBlockStore {
+impl FFIStore for KVBlockStore {
     /// Retrieves an array of bytes from the block store with given CID.
     fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>> {
         // A Bucket provides typed access to a section of the key/value store
