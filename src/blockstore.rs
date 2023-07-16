@@ -5,48 +5,48 @@ use bytes::Bytes;
 use libipld::Cid;
 use wnfs::common::{BlockStore, BlockStoreError};
 
-pub trait FFIStore<'a>: FFIStoreClone<'a> {
+pub trait FFIStore: FFIStoreClone {
     fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>>;
     fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()>;
 }
 
-pub trait FFIStoreClone<'a> {
-    fn clone_box(&self) -> Box<dyn FFIStore<'a> + 'a>;
+pub trait FFIStoreClone {
+    fn clone_box(&self) -> Box<dyn FFIStore>;
 }
 
-impl<'a, T> FFIStoreClone<'a> for T
+impl<T> FFIStoreClone for T
 where
-    T: 'a + FFIStore<'a> + Clone,
+    T: 'static + FFIStore + Clone,
 {
-    fn clone_box(&self) -> Box<dyn FFIStore<'a> + 'a> {
+    fn clone_box(&self) -> Box<dyn FFIStore> {
         Box::new(self.clone())
     }
 }
 
-impl<'a> Clone for Box<dyn FFIStore<'a> + 'a> {
-    fn clone(&self) -> Box<dyn FFIStore<'a> + 'a> {
+impl Clone for Box<dyn FFIStore> {
+    fn clone(&self) -> Box<dyn FFIStore> {
         self.clone_box()
     }
 }
 
 #[derive(Clone)]
-pub struct FFIFriendlyBlockStore<'a> {
-    pub ffi_store: Box<dyn FFIStore<'a> + 'a>,
+pub struct FFIFriendlyBlockStore {
+    pub ffi_store: Box<dyn FFIStore>,
 }
 
 //--------------------------------------------------------------------------------------------------
 // Implementations
 //--------------------------------------------------------------------------------------------------
 
-impl<'a> FFIFriendlyBlockStore<'a> {
+impl FFIFriendlyBlockStore {
     /// Creates a new kv block store.
-    pub fn new(ffi_store: Box<dyn FFIStore<'a>>) -> Self {
+    pub fn new(ffi_store: Box<dyn FFIStore>) -> Self {
         Self { ffi_store }
     }
 }
 
 #[async_trait(?Send)]
-impl<'a> BlockStore for FFIFriendlyBlockStore<'a> {
+impl BlockStore for FFIFriendlyBlockStore {
     /// Retrieves an array of bytes from the block store with given CID.
     async fn get_block(&self, cid: &Cid) -> Result<Bytes> {
         let bytes = self
