@@ -40,7 +40,7 @@ pub struct FFIFriendlyBlockStore<'a> {
 
 impl<'a> FFIFriendlyBlockStore<'a> {
     /// Creates a new kv block store.
-    pub fn new(ffi_store: Box<dyn FFIStore<'a> +'a>) -> Self {
+    pub fn new(ffi_store: Box<dyn FFIStore<'a> + 'a>) -> Self {
         Self { ffi_store }
     }
 }
