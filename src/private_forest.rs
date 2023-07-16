@@ -45,8 +45,8 @@ static mut STATE: Mutex<State> = Mutex::new(State {
     wnfs_key: Vec::new(),
 });
 
-pub struct PrivateDirectoryHelper {
-    pub store: FFIFriendlyBlockStore,
+pub struct PrivateDirectoryHelper<'a> {
+    pub store: FFIFriendlyBlockStore<'a>,
     forest: Rc<PrivateForest>,
     root_dir: Rc<PrivateDirectory>,
     rng: ThreadRng,
@@ -55,11 +55,11 @@ pub struct PrivateDirectoryHelper {
 // Single root (private ref) implementation of the wnfs private directory using KVBlockStore.
 // TODO: we assumed all the write, mkdirs use same roots here. this could be done using prepend
 // a root path to all path segments.
-impl<'a> PrivateDirectoryHelper {
+impl<'a> PrivateDirectoryHelper<'a> {
     async fn reload(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         cid: Cid,
-    ) -> Result<PrivateDirectoryHelper, String> {
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let initialized: bool;
         let wnfs_key: Vec<u8>;
         unsafe {
@@ -84,9 +84,9 @@ impl<'a> PrivateDirectoryHelper {
     }
 
     async fn init(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
-    ) -> Result<(PrivateDirectoryHelper, AccessKey, Cid), String> {
+    ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
         let rng = &mut thread_rng();
         let ratchet_seed: [u8; 32];
         let inumber: [u8; 32];
@@ -130,7 +130,7 @@ impl<'a> PrivateDirectoryHelper {
                             STATE.lock().unwrap().update(true, wnfs_key.to_owned());
                         }
                         Ok((
-                            PrivateDirectoryHelper {
+                            Self {
                                 store: store.to_owned(),
                                 forest: forest.to_owned(),
                                 root_dir: root_dir.to_owned(),
@@ -168,10 +168,10 @@ impl<'a> PrivateDirectoryHelper {
     }
 
     pub async fn load_with_wnfs_key(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
         wnfs_key: Vec<u8>,
-    ) -> Result<PrivateDirectoryHelper, String> {
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let rng = &mut thread_rng();
         let ratchet_seed: [u8; 32];
         let inumber: [u8; 32];
@@ -206,7 +206,7 @@ impl<'a> PrivateDirectoryHelper {
                     unsafe {
                         STATE.lock().unwrap().update(true, wnfs_key.to_owned());
                     }
-                    Ok(PrivateDirectoryHelper {
+                    Ok(Self {
                         store: store.to_owned(),
                         forest: forest.to_owned(),
                         root_dir: latest_root_dir.unwrap(),
@@ -234,10 +234,10 @@ impl<'a> PrivateDirectoryHelper {
     }
 
     pub async fn load_with_access_key(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
         access_key: AccessKey,
-    ) -> Result<PrivateDirectoryHelper, String> {
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let rng = thread_rng();
 
         let forest_res =
@@ -251,7 +251,7 @@ impl<'a> PrivateDirectoryHelper {
                 if root_dir.is_ok() {
                     let latest_root_dir = root_dir.unwrap().search_latest(forest, store).await;
                     if latest_root_dir.is_ok() {
-                        Ok(PrivateDirectoryHelper {
+                        Ok(Self {
                             store: store.to_owned(),
                             forest: forest.to_owned(),
                             root_dir: latest_root_dir.unwrap(),
@@ -286,7 +286,7 @@ impl<'a> PrivateDirectoryHelper {
     }
 
     async fn create_private_forest(
-        store: FFIFriendlyBlockStore,
+        store: FFIFriendlyBlockStore<'a>,
     ) -> Result<(Rc<PrivateForest>, Cid), String> {
         // Create the private forest (a HAMT), a map-like structure where file and directory ciphertexts are stored.
         let forest = Rc::new(PrivateForest::new());
@@ -305,7 +305,7 @@ impl<'a> PrivateDirectoryHelper {
     }
 
     async fn load_private_forest(
-        store: FFIFriendlyBlockStore,
+        store: FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
     ) -> Result<Rc<PrivateForest>, String> {
         // Deserialize private forest from the blockstore.
@@ -322,7 +322,7 @@ impl<'a> PrivateDirectoryHelper {
     }
 
     pub async fn update_private_forest(
-        store: FFIFriendlyBlockStore,
+        store: FFIFriendlyBlockStore<'a>,
         forest: Rc<PrivateForest>,
     ) -> Result<Cid, String> {
         // Serialize the private forest to DAG CBOR.
@@ -962,20 +962,20 @@ impl<'a> PrivateDirectoryHelper {
 }
 
 // Implement synced version of the library for using in android jni.
-impl PrivateDirectoryHelper {
+impl<'a> PrivateDirectoryHelper<'a> {
     pub fn synced_init(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
-    ) -> Result<(PrivateDirectoryHelper, AccessKey, Cid), String> {
+    ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(PrivateDirectoryHelper::init(store, wnfs_key));
     }
 
     pub fn synced_load_with_wnfs_key(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
         wnfs_key: Vec<u8>,
-    ) -> Result<PrivateDirectoryHelper, String> {
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(PrivateDirectoryHelper::load_with_wnfs_key(
             store, forest_cid, wnfs_key,
@@ -994,9 +994,9 @@ impl PrivateDirectoryHelper {
     // }
 
     pub fn synced_reload(
-        store: &mut FFIFriendlyBlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
-    ) -> Result<PrivateDirectoryHelper, String> {
+    ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         return runtime.block_on(PrivateDirectoryHelper::reload(store, forest_cid));
     }
