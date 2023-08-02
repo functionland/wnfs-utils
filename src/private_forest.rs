@@ -103,7 +103,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
         seed: [u8; 32],
     ) -> Result<[u8; 32]> {
         let root_did = Self::bytes_to_hex_str(&seed);
-        println!("wnfsutils: setup_seeded_keypair_access with seed: {:?} and root_did: {:?} and access_key: {:?}", seed, root_did, access_key);
         let exchange_keypair = SeededExchangeKey::from_seed(seed.clone())?;
 
         // Store the public key inside some public WNFS.
@@ -187,10 +186,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 if access_key.is_ok() {
                     let seed: [u8; 32] = wnfs_key.to_owned().try_into().expect("Length mismatch");
                     let access_key_unwrapped = access_key.ok().unwrap();
-                    println!(
-                        "wnfsutils: init accessKey is {:?} and seed is: {:?}",
-                        access_key_unwrapped, seed
-                    );
                     let seed_res = Self::setup_seeded_keypair_access(
                         forest,
                         access_key_unwrapped.to_owned(),
@@ -263,14 +258,10 @@ impl<'a> PrivateDirectoryHelper<'a> {
             root_did = Self::bytes_to_hex_str(&wnfs_key);
             seed = wnfs_key.to_owned().try_into().expect("Length mismatch");
         }
-        println!(
-            "wnfsutils: load_with_wnfs_key with seed: {:?} and root_did: {:?} ",
-            seed, root_did
-        );
         let exchange_keypair_res = SeededExchangeKey::from_seed(seed);
         if exchange_keypair_res.is_ok() {
             let exchange_keypair = exchange_keypair_res.ok().unwrap();
-            println!(
+            trace!(
                 "wnfsutils: load_with_wnfs_key with forest_cid: {:?}",
                 forest_cid
             );
@@ -291,7 +282,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 .await;
                 if counter_res.is_ok() {
                     let counter = counter_res.ok().unwrap().map(|x| x).unwrap_or_default();
-                    println!("wnfsutils: load_with_wnfs_key with counter: {:?}", counter);
+                    trace!("wnfsutils: load_with_wnfs_key with counter: {:?}", counter);
                     let label = sharer::create_share_label(
                         counter,
                         &root_did,
@@ -316,14 +307,14 @@ impl<'a> PrivateDirectoryHelper<'a> {
                                     rng: rng.to_owned(),
                                 })
                             } else {
-                                println!(
+                                trace!(
                                     "wnfsError in load_with_wnfs_key: {:?}",
                                     latest_root_dir.as_ref().err().unwrap().to_string()
                                 );
                                 Err(latest_root_dir.err().unwrap().to_string())
                             }
                         } else {
-                            println!(
+                            trace!(
                                 "wnfsError occured in load_with_wnfs_key: {:?}",
                                 latest_node.as_ref().to_owned().err().unwrap().to_string()
                             );
@@ -331,7 +322,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         }
                     } else {
                         let err = node_res.as_ref().to_owned().err().unwrap().to_string();
-                        println!(
+                        trace!(
                             "wnfsError occured in load_with_wnfs_key node_res: {:?}",
                             err
                         );
@@ -339,7 +330,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                     }
                 } else {
                     let err = counter_res.as_ref().to_owned().err().unwrap().to_string();
-                    println!(
+                    trace!(
                         "wnfsError occured in load_with_wnfs_key counter_res: {:?}",
                         err
                     );
@@ -347,7 +338,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 }
             } else {
                 let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
-                println!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+                trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
                 Err(err)
             }
         } else {
@@ -357,7 +348,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 .err()
                 .unwrap()
                 .to_string();
-            println!(
+            trace!(
                 "wnfsError occured in load_with_wnfs_key exchange_keypair_res: {:?}",
                 err
             );
