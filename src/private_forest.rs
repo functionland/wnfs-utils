@@ -283,7 +283,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if counter_res.is_ok() {
-                    let counter = counter_res.ok().unwrap().map(|x| x + 1).unwrap_or_default();
+                    let counter = counter_res.ok().unwrap().map(|x| x).unwrap_or_default();
                     println!("wnfsutils: load_with_wnfs_key with counter: {:?}", counter);
                     let label = sharer::create_share_label(
                         counter,
@@ -1304,8 +1304,8 @@ mod private_tests {
         let ls_result_reloaded = helper_reloaded.ls_files(&["root".into()]).await.unwrap();
         println!("ls_result_reloaded: {:?}", ls_result_reloaded);
         assert_eq!(ls_result_reloaded.get(0).unwrap().0, "hello");
-        assert_eq!(ls_result_reloaded.get(1).unwrap().0, "hi");
-        assert_eq!(ls_result_reloaded.get(2).unwrap().0, "hello2");
+        assert_eq!(ls_result_reloaded.get(2).unwrap().0, "hi");
+        assert_eq!(ls_result_reloaded.get(1).unwrap().0, "hello2");
         println!("cid_reloaded: {:?}", cid_reloaded);
         
         // let last_root_dir = helper
