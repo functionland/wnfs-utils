@@ -293,7 +293,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                     );
                     let node_res =
                         recipient::receive_share(label, &exchange_keypair, forest, store).await;
-                    if node_res.is_err() {
+                    if node_res.is_ok() {
                         let node = node_res.ok().unwrap();
                         let latest_node = node.search_latest(forest, store).await;
 
