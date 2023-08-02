@@ -1,10 +1,14 @@
 //! This example shows how to add a directory to a private forest (also HAMT) which encrypts it.
 //! It also shows how to retrieve encrypted nodes from the forest using `AccessKey`s.
 
+use async_trait::async_trait;
 use chrono::{prelude::*, Utc};
 use futures::StreamExt;
 use libipld::Cid;
 use rand::{rngs::ThreadRng, thread_rng};
+use rand_chacha::ChaCha12Rng;
+use rand_core::SeedableRng;
+use rsa::{traits::PublicKeyParts, BigUint, Oaep, RsaPrivateKey, RsaPublicKey};
 use std::{
     fs::File,
     io::{Read, Write},
@@ -13,15 +17,20 @@ use std::{
     sync::Mutex,
     time::SystemTime,
 };
-use wnfs::{common::Metadata, private::AesKey};
+
 use wnfs::{
-    common::{utils, BlockStore},
+    common::{utils, BlockStore, Metadata, CODEC_RAW},
     hamt::Hasher,
     namefilter::Namefilter,
-    private::{AccessKey, PrivateDirectory, PrivateForest, PrivateNode},
+    private::{
+        share::{recipient, sharer},
+        AccessKey, AesKey, ExchangeKey, PrivateDirectory, PrivateForest, PrivateKey,
+        PUBLIC_KEY_EXPONENT,
+    },
+    public::{PublicDirectory, PublicLink, PublicNode},
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use log::trace;
 use sha3::Sha3_256;
 
@@ -83,6 +92,62 @@ impl<'a> PrivateDirectoryHelper<'a> {
         }
     }
 
+    fn bytes_to_hex_str(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
+    }
+
+    async fn setup_seeded_keypair_access(
+        forest: &mut Rc<PrivateForest>,
+        access_key: AccessKey,
+        store: &impl BlockStore,
+        seed: [u8; 32],
+    ) -> Result<[u8; 32]> {
+        let root_did = Self::bytes_to_hex_str(&seed);
+        let exchange_keypair = SeededExchangeKey::from_seed(seed.clone())?;
+
+        // Store the public key inside some public WNFS.
+        // Building from scratch in this case. Would actually be stored next to the private forest usually.
+        let public_key_cid = exchange_keypair.store_public_key(store).await?;
+        let mut exchange_root = Rc::new(PublicDirectory::new(Utc::now()));
+        exchange_root
+            .write(
+                &["main".into(), "v1.exchange_key".into()],
+                public_key_cid,
+                Utc::now(),
+                store,
+            )
+            .await?;
+        let exchange_root = PublicLink::new(PublicNode::Dir(exchange_root));
+
+        // The user identity's root DID. In practice this would be e.g. an ed25519 key used
+        // for e.g. UCANs or key usually used for authenticating writes.
+
+        let counter = recipient::find_latest_share_counter(
+            0,
+            1000,
+            &exchange_keypair.encode_public_key(),
+            &root_did,
+            forest,
+            store,
+        )
+        .await?
+        .map(|x| x + 1)
+        .unwrap_or_default();
+
+        // Write the encrypted AccessKey into the forest
+        sharer::share::<PublicExchangeKey>(
+            &access_key,
+            counter,
+            &root_did,
+            forest,
+            exchange_root,
+            store,
+        )
+        .await?;
+
+        Ok(seed)
+    }
+
     async fn init(
         store: &mut FFIFriendlyBlockStore<'a>,
         wnfs_key: Vec<u8>,
@@ -129,16 +194,33 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         unsafe {
                             STATE.lock().unwrap().update(true, wnfs_key.to_owned());
                         }
-                        Ok((
-                            Self {
-                                store: store.to_owned(),
-                                forest: forest.to_owned(),
-                                root_dir: root_dir.to_owned(),
-                                rng: rng.to_owned(),
-                            },
-                            access_key.ok().unwrap(),
-                            forest_cid.unwrap(),
-                        ))
+                        let seed: [u8; 32] = wnfs_key.try_into().expect("Length mismatch");
+                        let access_key_unwrapped = access_key.ok().unwrap();
+                        let seed_res = Self::setup_seeded_keypair_access(
+                            forest,
+                            access_key_unwrapped.to_owned(),
+                            store,
+                            seed,
+                        )
+                        .await;
+                        if seed_res.is_ok() {
+                            Ok((
+                                Self {
+                                    store: store.to_owned(),
+                                    forest: forest.to_owned(),
+                                    root_dir: root_dir.to_owned(),
+                                    rng: rng.to_owned(),
+                                },
+                                access_key_unwrapped,
+                                forest_cid.unwrap(),
+                            ))
+                        } else {
+                            trace!(
+                                "wnfsError in init:setup_seeded_keypair_access : {:?}",
+                                seed_res.as_ref().err().unwrap().to_string()
+                            );
+                            Err(seed_res.err().unwrap().to_string())
+                        }
                     } else {
                         trace!(
                             "wnfsError in init: {:?}",
@@ -173,114 +255,106 @@ impl<'a> PrivateDirectoryHelper<'a> {
         wnfs_key: Vec<u8>,
     ) -> Result<PrivateDirectoryHelper<'a>, String> {
         let rng = &mut thread_rng();
-        let ratchet_seed: [u8; 32];
-        let inumber: [u8; 32];
+        let root_did: String;
+        let seed: [u8; 32];
         if wnfs_key.is_empty() {
             let wnfs_random_key = AesKey::new(utils::get_random_bytes::<32>(rng));
-            ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
-            inumber = utils::get_random_bytes::<32>(rng); // Needs to be random
+            let ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
+            root_did = Self::bytes_to_hex_str(&ratchet_seed);
+            seed = ratchet_seed;
         } else {
-            ratchet_seed = Sha3_256::hash(&wnfs_key);
-            inumber = Sha3_256::hash(&ratchet_seed);
+            root_did = Self::bytes_to_hex_str(&wnfs_key);
+            seed = wnfs_key.to_owned().try_into().expect("Length mismatch");
         }
-
-        let forest_res =
-            PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
-        if forest_res.is_ok() {
-            let forest = &mut forest_res.unwrap();
-            // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
-            let root_dir = PrivateDirectory::new_with_seed_and_store(
-                Namefilter::default(),
-                Utc::now(),
-                ratchet_seed,
-                inumber,
-                forest,
-                store,
-                rng,
-            )
-            .await;
-
-            if root_dir.is_ok() {
-                let latest_root_dir = root_dir.unwrap().search_latest(forest, store).await;
-                if latest_root_dir.is_ok() {
-                    unsafe {
-                        STATE.lock().unwrap().update(true, wnfs_key.to_owned());
-                    }
-                    Ok(Self {
-                        store: store.to_owned(),
-                        forest: forest.to_owned(),
-                        root_dir: latest_root_dir.unwrap(),
-                        rng: rng.to_owned(),
-                    })
-                } else {
-                    trace!(
-                        "wnfsError in load_with_wnfs_key: {:?}",
-                        latest_root_dir.as_ref().err().unwrap().to_string()
+        let exchange_keypair_res = SeededExchangeKey::from_seed(seed);
+        if exchange_keypair_res.is_ok() {
+            let exchange_keypair = exchange_keypair_res.ok().unwrap();
+            let forest_res =
+                PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
+            if forest_res.is_ok() {
+                let forest = &mut forest_res.unwrap();
+                // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
+                // Re-load private node from forest
+                let counter_res = recipient::find_latest_share_counter(
+                    0,
+                    1000,
+                    &exchange_keypair.encode_public_key(),
+                    &root_did,
+                    forest,
+                    store,
+                )
+                .await;
+                if counter_res.is_ok() {
+                    let counter = counter_res.ok().unwrap().map(|x| x + 1).unwrap_or_default();
+                    let label = sharer::create_share_label(
+                        counter,
+                        &root_did,
+                        &exchange_keypair.encode_public_key(),
                     );
-                    Err(latest_root_dir.err().unwrap().to_string())
-                }
-            } else {
-                trace!(
-                    "wnfsError occured in load_with_wnfs_key: {:?}",
-                    root_dir.as_ref().to_owned().err().unwrap().to_string()
-                );
-                Err(root_dir.as_ref().to_owned().err().unwrap().to_string())
-            }
-        } else {
-            let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
-            trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
-            Err(err)
-        }
-    }
+                    let node_res =
+                        recipient::receive_share(label, &exchange_keypair, forest, store).await;
+                    if node_res.is_err() {
+                        let node = node_res.ok().unwrap();
+                        let latest_node = node.search_latest(forest, store).await;
 
-    pub async fn load_with_access_key(
-        store: &mut FFIFriendlyBlockStore<'a>,
-        forest_cid: Cid,
-        access_key: AccessKey,
-    ) -> Result<PrivateDirectoryHelper<'a>, String> {
-        let rng = thread_rng();
-
-        let forest_res =
-            PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
-        if forest_res.is_ok() {
-            let forest = &mut forest_res.unwrap();
-            let node_res = PrivateNode::load(&access_key, &forest, store).await;
-
-            if node_res.is_ok() {
-                let root_dir = node_res.unwrap().as_dir();
-                if root_dir.is_ok() {
-                    let latest_root_dir = root_dir.unwrap().search_latest(forest, store).await;
-                    if latest_root_dir.is_ok() {
-                        Ok(Self {
-                            store: store.to_owned(),
-                            forest: forest.to_owned(),
-                            root_dir: latest_root_dir.unwrap(),
-                            rng,
-                        })
+                        if latest_node.is_ok() {
+                            let latest_root_dir = latest_node.unwrap().as_dir();
+                            if latest_root_dir.is_ok() {
+                                unsafe {
+                                    STATE.lock().unwrap().update(true, wnfs_key.to_owned());
+                                }
+                                Ok(Self {
+                                    store: store.to_owned(),
+                                    forest: forest.to_owned(),
+                                    root_dir: latest_root_dir.unwrap(),
+                                    rng: rng.to_owned(),
+                                })
+                            } else {
+                                trace!(
+                                    "wnfsError in load_with_wnfs_key: {:?}",
+                                    latest_root_dir.as_ref().err().unwrap().to_string()
+                                );
+                                Err(latest_root_dir.err().unwrap().to_string())
+                            }
+                        } else {
+                            trace!(
+                                "wnfsError occured in load_with_wnfs_key: {:?}",
+                                latest_node.as_ref().to_owned().err().unwrap().to_string()
+                            );
+                            Err(latest_node.as_ref().to_owned().err().unwrap().to_string())
+                        }
                     } else {
+                        let err = node_res.as_ref().to_owned().err().unwrap().to_string();
                         trace!(
-                            "wnfsError in load_with_wnfs_key: {:?}",
-                            latest_root_dir.as_ref().err().unwrap().to_string()
+                            "wnfsError occured in load_with_wnfs_key node_res: {:?}",
+                            err
                         );
-                        Err(latest_root_dir.err().unwrap().to_string())
+                        Err(err)
                     }
                 } else {
+                    let err = counter_res.as_ref().to_owned().err().unwrap().to_string();
                     trace!(
-                        "wnfsError in load_with_wnfs_key: {:?}",
-                        root_dir.as_ref().err().unwrap().to_string()
+                        "wnfsError occured in load_with_wnfs_key counter_res: {:?}",
+                        err
                     );
-                    Err(root_dir.err().unwrap().to_string())
+                    Err(err)
                 }
             } else {
-                trace!(
-                    "wnfsError occured in load_with_wnfs_key: {:?}",
-                    node_res.as_ref().to_owned().err().unwrap().to_string()
-                );
-                Err(node_res.as_ref().to_owned().err().unwrap().to_string())
+                let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
+                trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+                Err(err)
             }
         } else {
-            let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
-            trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+            let err = exchange_keypair_res
+                .as_ref()
+                .to_owned()
+                .err()
+                .unwrap()
+                .to_string();
+            trace!(
+                "wnfsError occured in load_with_wnfs_key exchange_keypair_res: {:?}",
+                err
+            );
             Err(err)
         }
     }
@@ -982,17 +1056,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
         ));
     }
 
-    // pub fn synced_load_with_access_key(
-    //     store: &mut FFIFriendlyBlockStore<'a>,
-    //     forest_cid: Cid,
-    //     wnfs_key: Vec<u8>,
-    // ) -> Result<PrivateDirectoryHelper<'a>, String> {
-    //     let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-    //     return runtime.block_on(PrivateDirectoryHelper::load_with_wnfs_key(
-    //         store, forest_cid, wnfs_key,
-    //     ));
-    // }
-
     pub fn synced_reload(
         store: &mut FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
@@ -1103,6 +1166,51 @@ impl<'a> PrivateDirectoryHelper<'a> {
             .split("/")
             .map(|s| s.to_string())
             .collect()
+    }
+}
+
+struct SeededExchangeKey(RsaPrivateKey);
+
+struct PublicExchangeKey(RsaPublicKey);
+
+impl SeededExchangeKey {
+    pub fn from_seed(seed: [u8; 32]) -> Result<Self> {
+        let rng = &mut ChaCha12Rng::from_seed(seed);
+        let private_key = RsaPrivateKey::new(rng, 2048)?;
+        Ok(Self(private_key))
+    }
+
+    pub async fn store_public_key(&self, store: &impl BlockStore) -> Result<Cid> {
+        store.put_block(self.encode_public_key(), CODEC_RAW).await
+    }
+
+    pub fn encode_public_key(&self) -> Vec<u8> {
+        self.0.n().to_bytes_be()
+    }
+}
+
+#[async_trait(?Send)]
+impl PrivateKey for SeededExchangeKey {
+    async fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let padding = Oaep::new::<Sha3_256>();
+        self.0.decrypt(padding, ciphertext).map_err(|e| anyhow!(e))
+    }
+}
+
+#[async_trait(?Send)]
+impl ExchangeKey for PublicExchangeKey {
+    async fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let padding = Oaep::new::<Sha3_256>();
+        self.0
+            .encrypt(&mut rand::thread_rng(), padding, data)
+            .map_err(|e| anyhow!(e))
+    }
+
+    async fn from_modulus(modulus: &[u8]) -> Result<Self> {
+        let n = BigUint::from_bytes_be(modulus);
+        let e = BigUint::from(PUBLIC_KEY_EXPONENT);
+
+        Ok(Self(rsa::RsaPublicKey::new(n, e).map_err(|e| anyhow!(e))?))
     }
 }
 
