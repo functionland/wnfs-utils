@@ -99,10 +99,11 @@ impl<'a> PrivateDirectoryHelper<'a> {
     async fn setup_seeded_keypair_access(
         forest: &mut Rc<PrivateForest>,
         access_key: AccessKey,
-        store: &impl BlockStore,
+        store: &mut FFIFriendlyBlockStore<'a>,
         seed: [u8; 32],
     ) -> Result<[u8; 32]> {
         let root_did = Self::bytes_to_hex_str(&seed);
+        println!("wnfsutils: setup_seeded_keypair_access with seed: {:?} and root_did: {:?} and access_key: {:?}", seed, root_did, access_key);
         let exchange_keypair = SeededExchangeKey::from_seed(seed.clone())?;
 
         // Store the public key inside some public WNFS.
@@ -144,7 +145,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
             store,
         )
         .await?;
-
         Ok(seed)
     }
 
@@ -167,7 +167,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         let forest_res = PrivateDirectoryHelper::create_private_forest(store.to_owned()).await;
 
         if forest_res.is_ok() {
-            let (forest, _) = &mut forest_res.unwrap();
+            let (forest, _) = &mut forest_res.ok().unwrap();
             // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
             let root_dir_res = PrivateDirectory::new_with_seed_and_store(
                 Namefilter::default(),
@@ -182,9 +182,22 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
             if root_dir_res.is_ok() {
                 // Private ref contains data and keys for fetching and decrypting the directory node in the private forest.
-                let root_dir = &mut root_dir_res.unwrap();
+                let root_dir = &mut root_dir_res.ok().unwrap();
                 let access_key = root_dir.as_node().store(forest, store, rng).await;
                 if access_key.is_ok() {
+                    let seed: [u8; 32] = wnfs_key.to_owned().try_into().expect("Length mismatch");
+                    let access_key_unwrapped = access_key.ok().unwrap();
+                    println!(
+                        "wnfsutils: init accessKey is {:?} and seed is: {:?}",
+                        access_key_unwrapped, seed
+                    );
+                    let seed_res = Self::setup_seeded_keypair_access(
+                        forest,
+                        access_key_unwrapped.to_owned(),
+                        store,
+                        seed,
+                    )
+                    .await;
                     let forest_cid = PrivateDirectoryHelper::update_private_forest(
                         store.to_owned(),
                         forest.to_owned(),
@@ -194,39 +207,22 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         unsafe {
                             STATE.lock().unwrap().update(true, wnfs_key.to_owned());
                         }
-                        let seed: [u8; 32] = wnfs_key.try_into().expect("Length mismatch");
-                        let access_key_unwrapped = access_key.ok().unwrap();
-                        let seed_res = Self::setup_seeded_keypair_access(
-                            forest,
-                            access_key_unwrapped.to_owned(),
-                            store,
-                            seed,
-                        )
-                        .await;
-                        if seed_res.is_ok() {
-                            Ok((
-                                Self {
-                                    store: store.to_owned(),
-                                    forest: forest.to_owned(),
-                                    root_dir: root_dir.to_owned(),
-                                    rng: rng.to_owned(),
-                                },
-                                access_key_unwrapped,
-                                forest_cid.unwrap(),
-                            ))
-                        } else {
-                            trace!(
-                                "wnfsError in init:setup_seeded_keypair_access : {:?}",
-                                seed_res.as_ref().err().unwrap().to_string()
-                            );
-                            Err(seed_res.err().unwrap().to_string())
-                        }
+                        Ok((
+                            Self {
+                                store: store.to_owned(),
+                                forest: forest.to_owned(),
+                                root_dir: root_dir.to_owned(),
+                                rng: rng.to_owned(),
+                            },
+                            access_key_unwrapped,
+                            forest_cid.unwrap(),
+                        ))
                     } else {
                         trace!(
-                            "wnfsError in init: {:?}",
-                            forest_cid.as_ref().err().unwrap().to_string()
+                            "wnfsError in init:setup_seeded_keypair_access : {:?}",
+                            seed_res.as_ref().err().unwrap().to_string()
                         );
-                        Err(forest_cid.err().unwrap().to_string())
+                        Err(seed_res.err().unwrap().to_string())
                     }
                 } else {
                     trace!(
@@ -254,6 +250,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         forest_cid: Cid,
         wnfs_key: Vec<u8>,
     ) -> Result<PrivateDirectoryHelper<'a>, String> {
+        trace!("wnfsutils: load_with_wnfs_key started");
         let rng = &mut thread_rng();
         let root_did: String;
         let seed: [u8; 32];
@@ -266,13 +263,21 @@ impl<'a> PrivateDirectoryHelper<'a> {
             root_did = Self::bytes_to_hex_str(&wnfs_key);
             seed = wnfs_key.to_owned().try_into().expect("Length mismatch");
         }
+        println!(
+            "wnfsutils: load_with_wnfs_key with seed: {:?} and root_did: {:?} ",
+            seed, root_did
+        );
         let exchange_keypair_res = SeededExchangeKey::from_seed(seed);
         if exchange_keypair_res.is_ok() {
             let exchange_keypair = exchange_keypair_res.ok().unwrap();
+            println!(
+                "wnfsutils: load_with_wnfs_key with forest_cid: {:?}",
+                forest_cid
+            );
             let forest_res =
                 PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
             if forest_res.is_ok() {
-                let forest = &mut forest_res.unwrap();
+                let forest = &mut forest_res.ok().unwrap();
                 // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
                 // Re-load private node from forest
                 let counter_res = recipient::find_latest_share_counter(
@@ -285,7 +290,8 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 )
                 .await;
                 if counter_res.is_ok() {
-                    let counter = counter_res.ok().unwrap().map(|x| x + 1).unwrap_or_default();
+                    let counter = counter_res.ok().unwrap().map(|x| x).unwrap_or_default();
+                    println!("wnfsutils: load_with_wnfs_key with counter: {:?}", counter);
                     let label = sharer::create_share_label(
                         counter,
                         &root_did,
@@ -298,7 +304,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         let latest_node = node.search_latest(forest, store).await;
 
                         if latest_node.is_ok() {
-                            let latest_root_dir = latest_node.unwrap().as_dir();
+                            let latest_root_dir = latest_node.ok().unwrap().as_dir();
                             if latest_root_dir.is_ok() {
                                 unsafe {
                                     STATE.lock().unwrap().update(true, wnfs_key.to_owned());
@@ -306,18 +312,18 @@ impl<'a> PrivateDirectoryHelper<'a> {
                                 Ok(Self {
                                     store: store.to_owned(),
                                     forest: forest.to_owned(),
-                                    root_dir: latest_root_dir.unwrap(),
+                                    root_dir: latest_root_dir.ok().unwrap(),
                                     rng: rng.to_owned(),
                                 })
                             } else {
-                                trace!(
+                                println!(
                                     "wnfsError in load_with_wnfs_key: {:?}",
                                     latest_root_dir.as_ref().err().unwrap().to_string()
                                 );
                                 Err(latest_root_dir.err().unwrap().to_string())
                             }
                         } else {
-                            trace!(
+                            println!(
                                 "wnfsError occured in load_with_wnfs_key: {:?}",
                                 latest_node.as_ref().to_owned().err().unwrap().to_string()
                             );
@@ -325,7 +331,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         }
                     } else {
                         let err = node_res.as_ref().to_owned().err().unwrap().to_string();
-                        trace!(
+                        println!(
                             "wnfsError occured in load_with_wnfs_key node_res: {:?}",
                             err
                         );
@@ -333,7 +339,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                     }
                 } else {
                     let err = counter_res.as_ref().to_owned().err().unwrap().to_string();
-                    trace!(
+                    println!(
                         "wnfsError occured in load_with_wnfs_key counter_res: {:?}",
                         err
                     );
@@ -341,7 +347,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 }
             } else {
                 let err = forest_res.as_ref().to_owned().err().unwrap().to_string();
-                trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+                println!("wnfsError occured in load_with_wnfs_key: {:?}", err);
                 Err(err)
             }
         } else {
@@ -351,7 +357,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 .err()
                 .unwrap()
                 .to_string();
-            trace!(
+            println!(
                 "wnfsError occured in load_with_wnfs_key exchange_keypair_res: {:?}",
                 err
             );
@@ -385,7 +391,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         // Deserialize private forest from the blockstore.
         let forest = store.get_deserializable::<PrivateForest>(&forest_cid).await;
         if forest.is_ok() {
-            Ok(Rc::new(forest.unwrap()))
+            Ok(Rc::new(forest.ok().unwrap()))
         } else {
             trace!(
                 "wnfsError occured in load__private_forest: {:?}",
@@ -1276,6 +1282,26 @@ mod private_tests {
             .read_file(&["root".into(), "hello".into(), "world.txt".into()])
             .await;
         assert_eq!(content.ok(), None);
+        println!("**************************reload test*****************");
+        let helper_reloaded = &mut PrivateDirectoryHelper::reload(blockstore, cid)
+            .await
+            .unwrap();
+        let cid_reloaded = helper_reloaded
+            .write_file(
+                &["root".into(), "hello2".into(), "world.txt".into()],
+                b"hello, world2!".to_vec(),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let ls_result_reloaded = helper_reloaded.ls_files(&["root".into()]).await.unwrap();
+        println!("ls_result_reloaded: {:?}", ls_result_reloaded);
+        assert_eq!(ls_result_reloaded.get(0).unwrap().0, "hello");
+        assert_eq!(ls_result_reloaded.get(2).unwrap().0, "hi");
+        assert_eq!(ls_result_reloaded.get(1).unwrap().0, "hello2");
+        println!("cid_reloaded: {:?}", cid_reloaded);
+
         // let last_root_dir = helper
         //     .get_root_dir(forest.to_owned(), access_key.to_owned())
         //     .await
