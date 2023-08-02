@@ -1,9 +1,9 @@
 //! This example shows how to add a directory to a private forest (also HAMT) which encrypts it.
 //! It also shows how to retrieve encrypted nodes from the forest using `AccessKey`s.
 
+use async_trait::async_trait;
 use chrono::{prelude::*, Utc};
 use futures::StreamExt;
-use async_trait::async_trait;
 use libipld::Cid;
 use rand::{rngs::ThreadRng, thread_rng};
 use rand_chacha::ChaCha12Rng;
@@ -19,18 +19,13 @@ use std::{
 };
 
 use wnfs::{
-    common::{utils, BlockStore, CODEC_RAW, Metadata},
+    common::{utils, BlockStore, Metadata, CODEC_RAW},
     hamt::Hasher,
     namefilter::Namefilter,
     private::{
-        AesKey,
-        AccessKey,
-        PrivateDirectory,
-        PrivateForest,
-        ExchangeKey,
-        PrivateKey,
+        share::{recipient, sharer},
+        AccessKey, AesKey, ExchangeKey, PrivateDirectory, PrivateForest, PrivateKey,
         PUBLIC_KEY_EXPONENT,
-        share::{recipient, sharer}
     },
     public::{PublicDirectory, PublicLink, PublicNode},
 };
@@ -98,9 +93,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     fn bytes_to_hex_str(bytes: &[u8]) -> String {
-        bytes.iter()
-            .map(|byte| format!("{:02x}", byte))
-            .collect()
+        bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
     }
 
     async fn setup_seeded_keypair_access(
@@ -208,7 +201,8 @@ impl<'a> PrivateDirectoryHelper<'a> {
                             access_key_unwrapped.to_owned(),
                             store,
                             seed,
-                        ).await;
+                        )
+                        .await;
                         if seed_res.is_ok() {
                             Ok((
                                 Self {
@@ -292,9 +286,13 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 .await;
                 if counter_res.is_ok() {
                     let counter = counter_res.ok().unwrap().map(|x| x + 1).unwrap_or_default();
-                    let label =
-                        sharer::create_share_label(counter, &root_did, &exchange_keypair.encode_public_key());
-                    let node_res = recipient::receive_share(label, &exchange_keypair, forest, store).await;
+                    let label = sharer::create_share_label(
+                        counter,
+                        &root_did,
+                        &exchange_keypair.encode_public_key(),
+                    );
+                    let node_res =
+                        recipient::receive_share(label, &exchange_keypair, forest, store).await;
                     if node_res.is_err() {
                         let node = node_res.ok().unwrap();
                         let latest_node = node.search_latest(forest, store).await;
@@ -327,12 +325,18 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         }
                     } else {
                         let err = node_res.as_ref().to_owned().err().unwrap().to_string();
-                        trace!("wnfsError occured in load_with_wnfs_key node_res: {:?}", err);
+                        trace!(
+                            "wnfsError occured in load_with_wnfs_key node_res: {:?}",
+                            err
+                        );
                         Err(err)
                     }
                 } else {
                     let err = counter_res.as_ref().to_owned().err().unwrap().to_string();
-                    trace!("wnfsError occured in load_with_wnfs_key counter_res: {:?}", err);
+                    trace!(
+                        "wnfsError occured in load_with_wnfs_key counter_res: {:?}",
+                        err
+                    );
                     Err(err)
                 }
             } else {
@@ -341,8 +345,16 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 Err(err)
             }
         } else {
-            let err = exchange_keypair_res.as_ref().to_owned().err().unwrap().to_string();
-            trace!("wnfsError occured in load_with_wnfs_key exchange_keypair_res: {:?}", err);
+            let err = exchange_keypair_res
+                .as_ref()
+                .to_owned()
+                .err()
+                .unwrap()
+                .to_string();
+            trace!(
+                "wnfsError occured in load_with_wnfs_key exchange_keypair_res: {:?}",
+                err
+            );
             Err(err)
         }
     }
