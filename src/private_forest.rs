@@ -1222,7 +1222,7 @@ mod private_tests {
 
     fn generate_dummy_data(size: usize) -> Vec<u8> {
         vec![0u8; size]
-    }    
+    }
 
     #[tokio::test]
     async fn test_parse_path() {
@@ -1372,7 +1372,5 @@ mod private_tests {
             .await
             .unwrap();
         assert_eq!(content, b"hello, world!".to_vec());
-
     }
-
 }
