@@ -1220,6 +1220,10 @@ mod private_tests {
     use crate::kvstore::KVBlockStore;
     use crate::private_forest::PrivateDirectoryHelper;
 
+    fn generate_dummy_data(size: usize) -> Vec<u8> {
+        vec![0u8; size]
+    }    
+
     #[tokio::test]
     async fn test_parse_path() {
         let path = "root/test.txt".to_string();
@@ -1315,4 +1319,60 @@ mod private_tests {
         let access_key_serialized = serde_json::to_string(&access_key).unwrap();
         println!("private ref: \n{}", access_key_serialized);
     }
+
+    #[tokio::test]
+    async fn test_large_file_write() {
+        let empty_key: Vec<u8> = vec![0; 32];
+        let store = KVBlockStore::new(String::from("./tmp/test2"), CODEC_DAG_CBOR);
+        let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
+        let (helper, access_key, cid) =
+            &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
+                .await
+                .unwrap();
+
+        println!("cid: {:?}", cid);
+        println!("access_key: {:?}", access_key.to_owned());
+
+        // Generate a dummy 600MB payload
+        let data = generate_dummy_data(1000 * 1024 * 1024); // 1000MB in bytes
+
+        let path = vec!["root".into(), "large_file.bin".into()];
+        let cid = helper.write_file(&path, data.to_owned(), 0).await.unwrap();
+        println!("cid: {:?}", cid);
+        println!("access_key: {:?}", access_key);
+
+        let ls_result = helper.ls_files(&["root".into()]).await.unwrap();
+        println!("ls: {:?}", ls_result);
+        assert_eq!(ls_result.get(0).unwrap().0, "large_file.bin");
+
+        let content = helper
+            .read_file(&["root".into(), "large_file.bin".into()])
+            .await
+            .unwrap();
+        assert_eq!(content, data);
+
+        let cid = helper
+            .write_file(
+                &["root".into(), "world.txt".into()],
+                b"hello, world!".to_vec(),
+                0,
+            )
+            .await
+            .unwrap();
+        println!("cid: {:?}", cid);
+        println!("access_key: {:?}", access_key);
+
+        let ls_result = helper.ls_files(&["root".into()]).await.unwrap();
+        println!("ls: {:?}", ls_result);
+        assert_eq!(ls_result.get(0).unwrap().0, "large_file.bin");
+        assert_eq!(ls_result.get(1).unwrap().0, "world.txt");
+
+        let content = helper
+            .read_file(&["root".into(), "world.txt".into()])
+            .await
+            .unwrap();
+        assert_eq!(content, b"hello, world!".to_vec());
+
+    }
+
 }
