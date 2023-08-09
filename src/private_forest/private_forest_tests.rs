@@ -3,11 +3,11 @@ use wnfs::common::CODEC_DAG_CBOR;
 use crate::blockstore::FFIFriendlyBlockStore;
 use crate::kvstore::KVBlockStore;
 use crate::private_forest::PrivateDirectoryHelper;
-use tempfile::NamedTempFile;
 use rand::RngCore;
-use std::path::PathBuf;
 use std::fs::File;
 use std::io::Read;
+use std::path::PathBuf;
+use tempfile::NamedTempFile;
 
 fn generate_dummy_data(size: usize) -> Vec<u8> {
     vec![0u8; size]
@@ -185,7 +185,10 @@ async fn test_large_file_write_stream() {
     let path_string: String = path_buf.to_string_lossy().into_owned();
 
     let path = vec!["root".into(), "large_file_stream.bin".into()];
-    let cid = helper.write_file_stream_from_path(&path, &path_string).await.unwrap();
+    let cid = helper
+        .write_file_stream_from_path(&path, &path_string)
+        .await
+        .unwrap();
     println!("cid: {:?}", cid);
     println!("access_key: {:?}", access_key);
 
@@ -197,16 +200,20 @@ async fn test_large_file_write_stream() {
     let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
     let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
     helper
-        .read_filestream_to_path(&path_string_read, &["root".into(), "large_file_stream.bin".into()], 0)
+        .read_filestream_to_path(
+            &path_string_read,
+            &["root".into(), "large_file_stream.bin".into()],
+            0,
+        )
         .await
         .unwrap();
 
     let mut file1 = File::open(tmp_file.path()).unwrap();
     let mut file2 = File::open(tmp_file_read.path()).unwrap();
-    
+
     let mut content1 = Vec::new();
     let mut content2 = Vec::new();
-    
+
     file1.read_to_end(&mut content1).unwrap();
     file2.read_to_end(&mut content2).unwrap();
     assert_eq!(content1, content2);
