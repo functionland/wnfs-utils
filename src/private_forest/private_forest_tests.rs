@@ -112,7 +112,7 @@ async fn serialize_access_key() {
 #[tokio::test]
 async fn test_large_file_write() {
     let empty_key: Vec<u8> = vec![0; 32];
-    let store = KVBlockStore::new(String::from("./tmp/test2"), CODEC_DAG_CBOR);
+    let store = KVBlockStore::new(String::from("./tmp/test_large_file_write"), CODEC_DAG_CBOR);
     let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
     let (helper, access_key, cid) =
         &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
@@ -166,7 +166,7 @@ async fn test_large_file_write() {
 #[tokio::test]
 async fn test_large_file_write_stream() {
     let empty_key: Vec<u8> = vec![0; 32];
-    let store = KVBlockStore::new(String::from("./tmp/test2"), CODEC_DAG_CBOR);
+    let store = KVBlockStore::new(String::from("./tmp/test_large_file_write_stream"), CODEC_DAG_CBOR);
     let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
     let (helper, access_key, cid) =
         &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
