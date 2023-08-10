@@ -726,7 +726,8 @@ impl<'a> PrivateDirectoryHelper<'a> {
                             let mut stream = file.stream_content(index, &forest, &mut self.store);
                             while let Some(block) = stream.next().await {
                                 if block.is_ok() {
-                                    let write_result = local_file_handler.write_all(&block.unwrap());
+                                    let write_result =
+                                        local_file_handler.write_all(&block.unwrap());
                                     if write_result.is_err() {
                                         trace!("wnfsError occured in read_filestream_to_path on write_result: {:?}", write_result.as_ref().err().unwrap().to_string());
                                     }
@@ -735,12 +736,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                                         "wnfsError occured in read_filestream_to_path on file_res: {:?}",
                                         block.as_ref().err().unwrap().to_string()
                                     );
-                                    return Err(
-                                        block
-                                        .err()
-                                        .unwrap()
-                                        .to_string()
-                                    )
+                                    return Err(block.err().unwrap().to_string());
                                 }
                                 //stream_content.extend_from_slice(&block.unwrap());
                             }
