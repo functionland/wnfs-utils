@@ -4,12 +4,12 @@ use crate::blockstore::FFIFriendlyBlockStore;
 use crate::kvstore::KVBlockStore;
 use crate::private_forest::PrivateDirectoryHelper;
 use rand::RngCore;
-use std::io::Read;
-use std::path::PathBuf;
-use tempfile::NamedTempFile;
 use std::fs::{read, File};
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
+use tempfile::NamedTempFile;
 
 fn generate_dummy_data(size: usize) -> Vec<u8> {
     vec![0u8; size]
@@ -116,7 +116,6 @@ async fn test_stream() {
     let file_size = 10 * 1024 * 1024; // 10 MB
     let path_segments: Vec<String> = vec!["root".to_string(), "stream.bin".to_string()];
 
-
     // Create the directory if it doesn't exist
     std::fs::create_dir_all("./tmp").unwrap();
 
@@ -126,28 +125,27 @@ async fn test_stream() {
 
     // Call the write method
     let write_res = helper
-    .write_file_stream_from_path(&path_segments, &filename.to_string())
-    .await;
+        .write_file_stream_from_path(&path_segments, &filename.to_string())
+        .await;
     assert!(write_res.is_ok(), "Writing the file failed!");
 
     let read_res = helper
-            .read_filestream_to_path(&read_filename.to_string(), &path_segments, 0)
-            .await;
+        .read_filestream_to_path(&read_filename.to_string(), &path_segments, 0)
+        .await;
     assert!(read_res.is_ok(), "Reading the file failed!");
 
     // Check if the read file has the same size as the original
     let original_content = read(Path::new(filename)).unwrap();
     let read_content = read(Path::new(read_filename)).unwrap();
     assert_eq!(
-            original_content.len(),
-            read_content.len(),
-            "The size of the read file is different from the original"
+        original_content.len(),
+        read_content.len(),
+        "The size of the read file is different from the original"
     );
 
     // Clean up
     std::fs::remove_file(filename).unwrap();
     std::fs::remove_file(read_filename).unwrap();
-
 }
 
 #[tokio::test]
