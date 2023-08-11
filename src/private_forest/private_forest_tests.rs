@@ -4,10 +4,12 @@ use crate::blockstore::FFIFriendlyBlockStore;
 use crate::kvstore::KVBlockStore;
 use crate::private_forest::PrivateDirectoryHelper;
 use rand::RngCore;
-use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
+use std::fs::{read, File};
+use std::io::Write;
+use std::path::Path;
 
 fn generate_dummy_data(size: usize) -> Vec<u8> {
     vec![0u8; size]
@@ -94,6 +96,58 @@ async fn iboverall() {
     // println!("access_key: {:?}", access_key.to_owned());
     // println!("last_access_key: {:?}", last_access_key.to_owned());
     // assert_eq!(last_access_key.to_owned(), access_key.to_owned())
+}
+
+#[tokio::test]
+async fn test_stream() {
+    let empty_key: Vec<u8> = vec![0; 32];
+    let store = KVBlockStore::new(String::from("./tmp/test_stream"), CODEC_DAG_CBOR);
+    let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
+    let (helper, access_key, cid) =
+        &mut PrivateDirectoryHelper::init(blockstore, empty_key.to_owned())
+            .await
+            .unwrap();
+
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key.to_owned());
+
+    let filename = "./tmp/test_file";
+    let read_filename = "./tmp/test_read_file";
+    let file_size = 10 * 1024 * 1024; // 10 MB
+    let path_segments: Vec<String> = vec!["root".to_string(), "stream.bin".to_string()];
+
+
+    // Create the directory if it doesn't exist
+    std::fs::create_dir_all("./tmp").unwrap();
+
+    // Create a test file of the desired size
+    let mut file = File::create(filename).unwrap();
+    file.write_all(&vec![0u8; file_size]).unwrap();
+
+    // Call the write method
+    let write_res = helper
+    .write_file_stream_from_path(&path_segments, &filename.to_string())
+    .await;
+    assert!(write_res.is_ok(), "Writing the file failed!");
+
+    let read_res = helper
+            .read_filestream_to_path(&read_filename.to_string(), &path_segments, 0)
+            .await;
+    assert!(read_res.is_ok(), "Reading the file failed!");
+
+    // Check if the read file has the same size as the original
+    let original_content = read(Path::new(filename)).unwrap();
+    let read_content = read(Path::new(read_filename)).unwrap();
+    assert_eq!(
+            original_content.len(),
+            read_content.len(),
+            "The size of the read file is different from the original"
+    );
+
+    // Clean up
+    std::fs::remove_file(filename).unwrap();
+    std::fs::remove_file(read_filename).unwrap();
+
 }
 
 #[tokio::test]
