@@ -142,6 +142,8 @@ async fn test_stream() {
         read_content.len(),
         "The size of the read file is different from the original"
     );
+    let ls_result = helper.ls_files(&["root".into()]).await;
+    println!("ls: {:?}", ls_result);
 
     // Clean up
     std::fs::remove_file(filename).unwrap();
