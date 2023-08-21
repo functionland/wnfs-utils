@@ -711,7 +711,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         let root_dir = &mut self.root_dir;
         //let mut stream_content: Vec<u8> = vec![];
         let local_file = File::create(local_filename);
-        if local_file.is_ok() {
+        if let Ok(mut local_file_handler) = local_file {
 
             let private_node_result = root_dir
                 .get_node(path_segments, true, forest, &mut self.store)
@@ -726,26 +726,18 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         if file_res.is_ok() {
                             let file = file_res.ok().unwrap();
 
-                            file.stream_content(index, &forest, &mut self.store)
-                            .for_each(|block| async { // Mark this block as async
+                            let mut stream = file.stream_content(index, &forest, &mut self.store);
+                            // Iterate over each block in the stream
+                            while let Some(block) = stream.next().await {
                                 if let Ok(actual_block) = block {
-                                    if let Ok(mut local_file_handler) = File::create(local_filename) {
-                                        if let Err(_e) = local_file_handler.write_all(&actual_block) {
-                                            // Handle the error as needed; perhaps log it or something else
-                                        }
-                                    } else {
-                                        // Handle the error creating the file
+                                    if let Err(_e) = local_file_handler.write_all(&actual_block) {
+                                        // Handle the error as needed; perhaps log it or something else
                                     }
                                 } else {
-                                    trace!(
-                                        "wnfsError1 occurred in read_filestream_to_path on block for the path: {:?} and index {:?}",
-                                        path_segments,
-                                        index
-                                    );
                                     // Handle the error as needed
                                 }
-                            })
-                            .await; // Await the completion of the entire stream
+                            }
+
                             Ok(true)
                         } else {
                             trace!(
