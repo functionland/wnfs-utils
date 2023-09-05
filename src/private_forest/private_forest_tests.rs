@@ -419,7 +419,6 @@ async fn test_large_file_write_stream() {
     assert_eq!(content, b"hello, world!".to_vec());
 }
 
-
 #[test]
 fn synced_test_large_file_write_stream() {
     let empty_key: Vec<u8> = vec![0; 32];
@@ -429,8 +428,7 @@ fn synced_test_large_file_write_stream() {
     );
     let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
     let (helper, access_key, cid) =
-        &mut PrivateDirectoryHelper::synced_init(blockstore, empty_key.to_owned())
-            .unwrap();
+        &mut PrivateDirectoryHelper::synced_init(blockstore, empty_key.to_owned()).unwrap();
 
     println!("cid: {:?}", cid);
     println!("access_key: {:?}", access_key.to_owned());
@@ -452,7 +450,8 @@ fn synced_test_large_file_write_stream() {
     println!("cid: {:?}", cid);
     println!("access_key: {:?}", access_key);
 
-    let ls_result: Vec<(String, wnfs::common::Metadata)> = helper.synced_ls_files(&["root".into()]).unwrap();
+    let ls_result: Vec<(String, wnfs::common::Metadata)> =
+        helper.synced_ls_files(&["root".into()]).unwrap();
     println!("ls: {:?}", ls_result);
     assert!(ls_result.get(0).unwrap().0.contains("file_stream1.bin"));
 
@@ -537,7 +536,11 @@ fn synced_test_large_file_write_stream() {
 
     let metadata1 = file1.metadata().unwrap();
     let metadata2 = file2.metadata().unwrap();
-    println!("original filesize: {:?} and read size: {:?}", metadata1.len(), metadata2.len());
+    println!(
+        "original filesize: {:?} and read size: {:?}",
+        metadata1.len(),
+        metadata2.len()
+    );
     assert_eq!(metadata1.len(), metadata2.len(), "File sizes do not match");
 
     let mut content1 = Vec::new();
@@ -588,7 +591,11 @@ fn synced_test_large_file_write_stream() {
 
     let metadata1 = file1.metadata().unwrap();
     let metadata2 = file2.metadata().unwrap();
-    println!("original filesize: {:?} and read size: {:?}", metadata1.len(), metadata2.len());
+    println!(
+        "original filesize: {:?} and read size: {:?}",
+        metadata1.len(),
+        metadata2.len()
+    );
     assert_eq!(
         metadata1.len(),
         metadata2.len(),
