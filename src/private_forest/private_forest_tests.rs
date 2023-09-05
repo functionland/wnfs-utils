@@ -418,3 +418,189 @@ async fn test_large_file_write_stream() {
         .unwrap();
     assert_eq!(content, b"hello, world!".to_vec());
 }
+
+
+#[test]
+fn synced_test_large_file_write_stream() {
+    let empty_key: Vec<u8> = vec![0; 32];
+    let store = KVBlockStore::new(
+        String::from("./tmp/test_large_file_write_stream"),
+        CODEC_DAG_CBOR,
+    );
+    let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
+    let (helper, access_key, cid) =
+        &mut PrivateDirectoryHelper::synced_init(blockstore, empty_key.to_owned())
+            .unwrap();
+
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key.to_owned());
+
+    // Generate first dummy 1MB payload
+    let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "file_stream1.bin".into()];
+    let cid = helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let ls_result: Vec<(String, wnfs::common::Metadata)> = helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result.get(0).unwrap().0.contains("file_stream1.bin"));
+
+    // Generate second dummy 1MB payload
+    let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "file_stream2.bin".into()];
+    let cid = helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let ls_result = helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result.iter().any(|item| item.0 == "file_stream2.bin"));
+
+    // Generate third dummy 1MB payload
+    let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "file_stream3.bin".into()];
+    let cid = helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let ls_result = helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result.iter().any(|item| item.0 == "file_stream3.bin"));
+
+    // Generate a dummy 100MB payload
+    let mut data = generate_dummy_data(100 * 1024 * 1024); // 1000MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "large_file_stream.bin".into()];
+    let cid = helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let ls_result = helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result
+        .iter()
+        .any(|item| item.0 == "large_file_stream.bin"));
+
+    let tmp_file_read = NamedTempFile::new().unwrap();
+    let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
+    let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
+    helper
+        .synced_read_filestream_to_path(
+            &path_string_read,
+            &["root".into(), "large_file_stream.bin".into()],
+            0,
+        )
+        .unwrap();
+
+    let mut file1 = File::open(tmp_file.path()).unwrap();
+    let mut file2 = File::open(tmp_file_read.path()).unwrap();
+
+    let metadata1 = file1.metadata().unwrap();
+    let metadata2 = file2.metadata().unwrap();
+    println!("original filesize: {:?} and read size: {:?}", metadata1.len(), metadata2.len());
+    assert_eq!(metadata1.len(), metadata2.len(), "File sizes do not match");
+
+    let mut content1 = Vec::new();
+    let mut content2 = Vec::new();
+
+    file1.read_to_end(&mut content1).unwrap();
+    file2.read_to_end(&mut content2).unwrap();
+    assert_eq!(content1, content2);
+
+    println!("read_file_stream_from_path checks done");
+
+    // Generate second dummy 60MB payload
+    let mut data = generate_dummy_data(60 * 1024 * 1024); // 1000MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "large_file_stream2.bin".into()];
+    let cid = helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let ls_result = helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result
+        .iter()
+        .any(|item| item.0 == "large_file_stream2.bin"));
+
+    let tmp_file_read = NamedTempFile::new().unwrap();
+    let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
+    let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
+    helper
+        .synced_read_filestream_to_path(
+            &path_string_read,
+            &["root".into(), "large_file_stream2.bin".into()],
+            0,
+        )
+        .unwrap();
+    println!("read_filestream_to_path2 done");
+    let mut file1 = File::open(tmp_file.path()).unwrap();
+    let mut file2 = File::open(tmp_file_read.path()).unwrap();
+
+    let metadata1 = file1.metadata().unwrap();
+    let metadata2 = file2.metadata().unwrap();
+    println!("original filesize: {:?} and read size: {:?}", metadata1.len(), metadata2.len());
+    assert_eq!(
+        metadata1.len(),
+        metadata2.len(),
+        "File sizes 2 do not match"
+    );
+
+    let mut content1 = Vec::new();
+    let mut content2 = Vec::new();
+
+    file1.read_to_end(&mut content1).unwrap();
+    file2.read_to_end(&mut content2).unwrap();
+    assert_eq!(content1, content2);
+
+    println!("read_file_stream_from_path2 checks done");
+}
