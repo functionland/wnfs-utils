@@ -423,7 +423,7 @@ async fn test_large_file_write_stream() {
 fn synced_test_large_file_write_stream() {
     let empty_key: Vec<u8> = vec![0; 32];
     let store = KVBlockStore::new(
-        String::from("./tmp/test_large_file_write_stream"),
+        String::from("./tmp/synced_test_large_file_write_stream"),
         CODEC_DAG_CBOR,
     );
     let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
