@@ -3,6 +3,7 @@ use wnfs::common::CODEC_DAG_CBOR;
 use crate::blockstore::FFIFriendlyBlockStore;
 use crate::kvstore::KVBlockStore;
 use crate::private_forest::PrivateDirectoryHelper;
+use libipld::Cid;
 use rand::RngCore;
 use std::fs::{read, File};
 use std::io::Read;
@@ -432,6 +433,13 @@ fn synced_test_large_file_write_stream() {
 
     println!("cid: {:?}", cid);
     println!("access_key: {:?}", access_key.to_owned());
+    let mut cid: Cid;
+
+    for i in 1..=15 {
+        let path = vec!["root".into(), format!("test_{}", i).into()];
+        cid = helper.synced_mkdir(&path).unwrap();
+        println!("CID for test_{}: {:?}", i, cid);
+    }
 
     // Generate first dummy 1MB payload
     let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
