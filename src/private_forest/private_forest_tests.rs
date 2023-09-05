@@ -422,6 +422,7 @@ async fn test_large_file_write_stream() {
 
 #[test]
 fn synced_test_large_file_write_stream() {
+    let itteration = 15;
     let empty_key: Vec<u8> = vec![0; 32];
     let store = KVBlockStore::new(
         String::from("./tmp/synced_test_large_file_write_stream"),
@@ -435,75 +436,53 @@ fn synced_test_large_file_write_stream() {
     println!("access_key: {:?}", access_key.to_owned());
     let mut cid: Cid;
 
-    for i in 1..=15 {
+    for i in 1..=itteration {
         let path = vec!["root".into(), format!("test_{}", i).into()];
         cid = helper.synced_mkdir(&path).unwrap();
-        println!("CID for test_{}: {:?}", i, cid);
+        println!("CID for mkdir test_{}: {:?}", i, cid);
     }
 
-    // Generate first dummy 1MB payload
-    let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
-    rand::thread_rng().fill_bytes(&mut data);
-    let tmp_file = NamedTempFile::new().unwrap();
-    async_std::task::block_on(async {
-        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
-    });
-    let path_buf: PathBuf = tmp_file.path().to_path_buf();
-    let path_string: String = path_buf.to_string_lossy().into_owned();
+    for i in 1..=itteration {
+        println!(
+            "*******************Starting write iteration {}******************",
+            i
+        );
 
-    let path = vec!["root".into(), "file_stream1.bin".into()];
-    let cid = helper
-        .synced_write_file_stream_from_path(&path, &path_string)
-        .unwrap();
-    println!("cid: {:?}", cid);
-    println!("access_key: {:?}", access_key);
+        // Generate first dummy 1MB payload
+        let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
+        rand::thread_rng().fill_bytes(&mut data);
+        let tmp_file = NamedTempFile::new().unwrap();
+        async_std::task::block_on(async {
+            async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+        });
+
+        let path_buf: PathBuf = tmp_file.path().to_path_buf();
+        let path_string: String = path_buf.to_string_lossy().into_owned();
+
+        let path = vec!["root".into(), format!("file_stream{}.bin", i)];
+        let cid = helper
+            .synced_write_file_stream_from_path(&path, &path_string)
+            .unwrap();
+
+        println!("cid: {:?}", cid);
+        println!("access_key: {:?}", access_key);
+    }
 
     let ls_result: Vec<(String, wnfs::common::Metadata)> =
         helper.synced_ls_files(&["root".into()]).unwrap();
     println!("ls: {:?}", ls_result);
-    assert!(ls_result.get(0).unwrap().0.contains("file_stream1.bin"));
+    let filenames_from_ls: Vec<String> = ls_result.iter().map(|(name, _)| name.clone()).collect();
 
-    // Generate second dummy 1MB payload
-    let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
-    rand::thread_rng().fill_bytes(&mut data);
-    let tmp_file = NamedTempFile::new().unwrap();
-    async_std::task::block_on(async {
-        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
-    });
-    let path_buf: PathBuf = tmp_file.path().to_path_buf();
-    let path_string: String = path_buf.to_string_lossy().into_owned();
+    let mut found = true;
+    for i in 1..=itteration {
+        let file_name = format!("file_stream{}.bin", i);
+        if !filenames_from_ls.contains(&file_name) {
+            found = false;
+            break;
+        }
+    }
 
-    let path = vec!["root".into(), "file_stream2.bin".into()];
-    let cid = helper
-        .synced_write_file_stream_from_path(&path, &path_string)
-        .unwrap();
-    println!("cid: {:?}", cid);
-    println!("access_key: {:?}", access_key);
-
-    let ls_result = helper.synced_ls_files(&["root".into()]).unwrap();
-    println!("ls: {:?}", ls_result);
-    assert!(ls_result.iter().any(|item| item.0 == "file_stream2.bin"));
-
-    // Generate third dummy 1MB payload
-    let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
-    rand::thread_rng().fill_bytes(&mut data);
-    let tmp_file = NamedTempFile::new().unwrap();
-    async_std::task::block_on(async {
-        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
-    });
-    let path_buf: PathBuf = tmp_file.path().to_path_buf();
-    let path_string: String = path_buf.to_string_lossy().into_owned();
-
-    let path = vec!["root".into(), "file_stream3.bin".into()];
-    let cid = helper
-        .synced_write_file_stream_from_path(&path, &path_string)
-        .unwrap();
-    println!("cid: {:?}", cid);
-    println!("access_key: {:?}", access_key);
-
-    let ls_result = helper.synced_ls_files(&["root".into()]).unwrap();
-    println!("ls: {:?}", ls_result);
-    assert!(ls_result.iter().any(|item| item.0 == "file_stream3.bin"));
+    assert!(found, "Not all expected files are present");
 
     // Generate a dummy 100MB payload
     let mut data = generate_dummy_data(100 * 1024 * 1024); // 1000MB in bytes
