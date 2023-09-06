@@ -714,7 +714,7 @@ fn synced_test_large_file_write_stream_with_reload() {
     let empty_key: Vec<u8> = vec![0; 32];
 
     let store = KVBlockStore::new(
-        String::from("./tmp/synced_test_large_file_write_stream"),
+        String::from("./tmp/synced_test_large_file_write_stream_with_reload"),
         CODEC_DAG_CBOR,
     );
     let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
@@ -901,7 +901,7 @@ async fn test_large_file_write_stream_with_reload() {
     let empty_key: Vec<u8> = vec![0; 32];
 
     let store = KVBlockStore::new(
-        String::from("./tmp/synced_test_large_file_write_stream"),
+        String::from("./tmp/test_large_file_write_stream_with_reload"),
         CODEC_DAG_CBOR,
     );
     let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
@@ -922,9 +922,10 @@ async fn test_large_file_write_stream_with_reload() {
     }
 
     for i in 1..=itteration {
-        let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-            .await
-            .unwrap();
+        let reload_helper =
+            &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+                .await
+                .unwrap();
         println!(
             "*******************Starting write iteration {}******************",
             i
@@ -949,9 +950,10 @@ async fn test_large_file_write_stream_with_reload() {
         println!("access_key: {:?}", access_key);
     }
 
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     let ls_result: Vec<(String, wnfs::common::Metadata)> =
         reload_helper.ls_files(&["root".into()]).await.unwrap();
     println!("ls: {:?}", ls_result);
@@ -978,9 +980,10 @@ async fn test_large_file_write_stream_with_reload() {
     let path_string: String = path_buf.to_string_lossy().into_owned();
 
     let path = vec!["root".into(), "large_file_stream.bin".into()];
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     cid = reload_helper
         .write_file_stream_from_path(&path, &path_string)
         .await
@@ -993,9 +996,10 @@ async fn test_large_file_write_stream_with_reload() {
         .iter()
         .any(|item| item.0 == "large_file_stream.bin"));
 
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     let ls_result = reload_helper.ls_files(&["root".into()]).await.unwrap();
     println!("ls: {:?}", ls_result);
     assert!(ls_result
@@ -1005,9 +1009,10 @@ async fn test_large_file_write_stream_with_reload() {
     let tmp_file_read = NamedTempFile::new().unwrap();
     let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
     let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     reload_helper
         .read_filestream_to_path(
             &path_string_read,
@@ -1047,9 +1052,10 @@ async fn test_large_file_write_stream_with_reload() {
     let path_buf: PathBuf = tmp_file.path().to_path_buf();
     let path_string: String = path_buf.to_string_lossy().into_owned();
 
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     let path = vec!["root".into(), "large_file_stream2.bin".into()];
     cid = reload_helper
         .write_file_stream_from_path(&path, &path_string)
@@ -1058,9 +1064,10 @@ async fn test_large_file_write_stream_with_reload() {
     println!("cid: {:?}", cid);
     println!("access_key: {:?}", access_key);
 
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     let ls_result = reload_helper.ls_files(&["root".into()]).await.unwrap();
     println!("ls: {:?}", ls_result);
     assert!(ls_result
@@ -1070,9 +1077,10 @@ async fn test_large_file_write_stream_with_reload() {
     let tmp_file_read = NamedTempFile::new().unwrap();
     let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
     let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
-    let reload_helper = &mut PrivateDirectoryHelper::reload(blockstore, cid)
-        .await
-        .unwrap();
+    let reload_helper =
+        &mut PrivateDirectoryHelper::load_with_wnfs_key(blockstore, cid, empty_key.to_owned())
+            .await
+            .unwrap();
     reload_helper
         .read_filestream_to_path(
             &path_string_read,
