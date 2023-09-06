@@ -422,7 +422,8 @@ async fn test_large_file_write_stream() {
 
 #[test]
 fn synced_test_large_file_write_stream() {
-    let itteration = 15;
+    let itteration = 2;
+    let reload_itteration = 15;
     let empty_key: Vec<u8> = vec![0; 32];
     let store = KVBlockStore::new(
         String::from("./tmp/synced_test_large_file_write_stream"),
@@ -596,5 +597,300 @@ fn synced_test_large_file_write_stream() {
     file2.read_to_end(&mut content2).unwrap();
     assert_eq!(content1, content2);
 
-    println!("read_file_stream_from_path2 checks done");
+    //Testing reload
+    println!("read_file_stream_from_path2 checks done. Now testing reload");
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+
+    let path = vec!["root".into(), "test_reload".into()];
+    let mut cid = reload_helper.synced_mkdir(&path).unwrap();
+    println!("CID for mkdir test_reload: {:?}", cid);
+
+    for i in 1..=reload_itteration {
+        let path = vec!["root".into(), format!("test_reload_{}", i).into()];
+        cid = reload_helper.synced_mkdir(&path).unwrap();
+        println!("CID for mkdir test_reload_{}: {:?}", i, cid);
+    }
+
+    for i in 1..=reload_itteration {
+        println!(
+            "*******************Starting reload write iteration {}******************",
+            i
+        );
+
+        // Generate first dummy 1MB payload
+        let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
+        rand::thread_rng().fill_bytes(&mut data);
+        let tmp_file = NamedTempFile::new().unwrap();
+        async_std::task::block_on(async {
+            async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+        });
+
+        let path_buf: PathBuf = tmp_file.path().to_path_buf();
+        let path_string: String = path_buf.to_string_lossy().into_owned();
+
+        let path = vec!["root".into(), format!("file_stream_reload{}.bin", i)];
+        let cid = reload_helper
+            .synced_write_file_stream_from_path(&path, &path_string)
+            .unwrap();
+
+        println!("cid_reload: {:?}", cid);
+        println!("access_key_reload: {:?}", access_key);
+    }
+
+    let ls_result: Vec<(String, wnfs::common::Metadata)> =
+        reload_helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls_reload: {:?}", ls_result);
+    let filenames_from_ls: Vec<String> = ls_result.iter().map(|(name, _)| name.clone()).collect();
+
+    let mut found = true;
+    for i in 1..=reload_itteration {
+        let file_name = format!("file_stream_reload{}.bin", i);
+        if !filenames_from_ls.contains(&file_name) {
+            found = false;
+            break;
+        }
+    }
+
+    assert!(found, "Not all expected files are present in reload");
+    // Generate a dummy 100MB payload
+    let mut data = generate_dummy_data(100 * 1024 * 1024); // 1000MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file_reload = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file_reload.path(), &data)
+            .await
+            .unwrap();
+    });
+    let path_buf: PathBuf = tmp_file_reload.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "large_file_stream_reload.bin".into()];
+    let cid = reload_helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid_reload: {:?}", cid);
+    println!("access_key_reload: {:?}", access_key);
+
+    let ls_result = reload_helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls_reload: {:?}", ls_result);
+    assert!(ls_result
+        .iter()
+        .any(|item| item.0 == "large_file_stream_reload.bin"));
+
+    let tmp_file_read = NamedTempFile::new().unwrap();
+    let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
+    let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
+    reload_helper
+        .synced_read_filestream_to_path(
+            &path_string_read,
+            &["root".into(), "large_file_stream2.bin".into()],
+            0,
+        )
+        .unwrap();
+
+    let mut file1 = File::open(tmp_file.path()).unwrap();
+    let mut file2 = File::open(tmp_file_read.path()).unwrap();
+
+    let metadata1 = file1.metadata().unwrap();
+    let metadata2 = file2.metadata().unwrap();
+    println!(
+        "original filesize before reload: {:?} and read size afte reload: {:?}",
+        metadata1.len(),
+        metadata2.len()
+    );
+    assert_eq!(metadata1.len(), metadata2.len(), "File sizes do not match");
+
+    let mut content1 = Vec::new();
+    let mut content2 = Vec::new();
+
+    file1.read_to_end(&mut content1).unwrap();
+    file2.read_to_end(&mut content2).unwrap();
+    assert_eq!(content1, content2);
+}
+
+#[test]
+fn synced_test_large_file_write_stream_with_reload() {
+    let itteration = 2;
+    let empty_key: Vec<u8> = vec![0; 32];
+
+    let store = KVBlockStore::new(
+        String::from("./tmp/synced_test_large_file_write_stream"),
+        CODEC_DAG_CBOR,
+    );
+    let blockstore = &mut FFIFriendlyBlockStore::new(Box::new(store));
+
+    let (helper, access_key, cid) =
+        &mut PrivateDirectoryHelper::synced_init(blockstore, empty_key.to_owned()).unwrap();
+
+    let mut cid = cid.to_owned();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key.to_owned());
+
+    for i in 1..=itteration {
+        let path = vec!["root".into(), format!("test_{}", i).into()];
+        cid = helper.synced_mkdir(&path).unwrap();
+        println!("CID for mkdir test_{}: {:?}", i, cid);
+    }
+
+    for i in 1..=itteration {
+        let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+        println!(
+            "*******************Starting write iteration {}******************",
+            i
+        );
+
+        // Generate first dummy 1MB payload
+        let mut data = generate_dummy_data(1 * 1024 * 1024); // 1MB in bytes
+        rand::thread_rng().fill_bytes(&mut data);
+        let tmp_file = NamedTempFile::new().unwrap();
+        async_std::task::block_on(async {
+            async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+        });
+
+        let path_buf: PathBuf = tmp_file.path().to_path_buf();
+        let path_string: String = path_buf.to_string_lossy().into_owned();
+
+        let path = vec!["root".into(), format!("file_stream{}.bin", i)];
+        let cid = reload_helper
+            .synced_write_file_stream_from_path(&path, &path_string)
+            .unwrap();
+
+        println!("cid: {:?}", cid);
+        println!("access_key: {:?}", access_key);
+    }
+
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    let ls_result: Vec<(String, wnfs::common::Metadata)> =
+        reload_helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    let filenames_from_ls: Vec<String> = ls_result.iter().map(|(name, _)| name.clone()).collect();
+
+    let mut found = true;
+    for i in 1..=itteration {
+        let file_name = format!("file_stream{}.bin", i);
+        if !filenames_from_ls.contains(&file_name) {
+            found = false;
+            break;
+        }
+    }
+
+    assert!(found, "Not all expected files are present");
+
+    // Generate a dummy 100MB payload
+    let mut data = generate_dummy_data(100 * 1024 * 1024); // 1000MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let path = vec!["root".into(), "large_file_stream.bin".into()];
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    let cid = reload_helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    let ls_result = reload_helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result
+        .iter()
+        .any(|item| item.0 == "large_file_stream.bin"));
+
+    let tmp_file_read = NamedTempFile::new().unwrap();
+    let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
+    let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    reload_helper
+        .synced_read_filestream_to_path(
+            &path_string_read,
+            &["root".into(), "large_file_stream.bin".into()],
+            0,
+        )
+        .unwrap();
+
+    let mut file1 = File::open(tmp_file.path()).unwrap();
+    let mut file2 = File::open(tmp_file_read.path()).unwrap();
+
+    let metadata1 = file1.metadata().unwrap();
+    let metadata2 = file2.metadata().unwrap();
+    println!(
+        "original filesize: {:?} and read size: {:?}",
+        metadata1.len(),
+        metadata2.len()
+    );
+    assert_eq!(metadata1.len(), metadata2.len(), "File sizes do not match");
+
+    let mut content1 = Vec::new();
+    let mut content2 = Vec::new();
+
+    file1.read_to_end(&mut content1).unwrap();
+    file2.read_to_end(&mut content2).unwrap();
+    assert_eq!(content1, content2);
+
+    println!("read_file_stream_from_path checks done");
+
+    // Generate second dummy 60MB payload
+    let mut data = generate_dummy_data(60 * 1024 * 1024); // 1000MB in bytes
+    rand::thread_rng().fill_bytes(&mut data);
+    let tmp_file = NamedTempFile::new().unwrap();
+    async_std::task::block_on(async {
+        async_std::fs::write(tmp_file.path(), &data).await.unwrap();
+    });
+    let path_buf: PathBuf = tmp_file.path().to_path_buf();
+    let path_string: String = path_buf.to_string_lossy().into_owned();
+
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    let path = vec!["root".into(), "large_file_stream2.bin".into()];
+    let cid = reload_helper
+        .synced_write_file_stream_from_path(&path, &path_string)
+        .unwrap();
+    println!("cid: {:?}", cid);
+    println!("access_key: {:?}", access_key);
+
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    let ls_result = reload_helper.synced_ls_files(&["root".into()]).unwrap();
+    println!("ls: {:?}", ls_result);
+    assert!(ls_result
+        .iter()
+        .any(|item| item.0 == "large_file_stream2.bin"));
+
+    let tmp_file_read = NamedTempFile::new().unwrap();
+    let path_buf_read: PathBuf = tmp_file_read.path().to_path_buf();
+    let path_string_read: String = path_buf_read.to_string_lossy().into_owned();
+    let reload_helper = &mut PrivateDirectoryHelper::synced_reload(blockstore, cid).unwrap();
+    reload_helper
+        .synced_read_filestream_to_path(
+            &path_string_read,
+            &["root".into(), "large_file_stream2.bin".into()],
+            0,
+        )
+        .unwrap();
+    println!("read_filestream_to_path2 done");
+    let mut file1 = File::open(tmp_file.path()).unwrap();
+    let mut file2 = File::open(tmp_file_read.path()).unwrap();
+
+    let metadata1 = file1.metadata().unwrap();
+    let metadata2 = file2.metadata().unwrap();
+    println!(
+        "original filesize: {:?} and read size: {:?}",
+        metadata1.len(),
+        metadata2.len()
+    );
+    assert_eq!(
+        metadata1.len(),
+        metadata2.len(),
+        "File sizes 2 do not match"
+    );
+
+    let mut content1 = Vec::new();
+    let mut content2 = Vec::new();
+
+    file1.read_to_end(&mut content1).unwrap();
+    file2.read_to_end(&mut content2).unwrap();
+    assert_eq!(content1, content2);
 }
