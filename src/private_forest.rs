@@ -19,13 +19,12 @@ use std::{
 };
 
 use wnfs::{
-    common::{utils, BlockStore, Metadata, CODEC_RAW},
-    hamt::Hasher,
-    namefilter::Namefilter,
+    common::{BlockStore, Metadata, CODEC_RAW},
+    nameaccumulator::AccumulatorSetup,
     private::{
+        forest::{hamt::HamtForest, traits::PrivateForest},
         share::{recipient, sharer},
-        AccessKey, AesKey, ExchangeKey, PrivateDirectory, PrivateForest, PrivateKey,
-        PUBLIC_KEY_EXPONENT,
+        AccessKey, ExchangeKey, PrivateDirectory, PrivateKey, PUBLIC_KEY_EXPONENT,
     },
     public::{PublicDirectory, PublicLink, PublicNode},
 };
@@ -56,7 +55,7 @@ static mut STATE: Mutex<State> = Mutex::new(State {
 
 pub struct PrivateDirectoryHelper<'a> {
     pub store: FFIFriendlyBlockStore<'a>,
-    forest: Rc<PrivateForest>,
+    forest: Rc<HamtForest>,
     root_dir: Rc<PrivateDirectory>,
     rng: ThreadRng,
 }
@@ -97,7 +96,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
     }
 
     async fn setup_seeded_keypair_access(
-        forest: &mut Rc<PrivateForest>,
+        forest: &mut Rc<HamtForest>,
         access_key: AccessKey,
         store: &mut FFIFriendlyBlockStore<'a>,
         seed: [u8; 32],
@@ -139,8 +138,8 @@ impl<'a> PrivateDirectoryHelper<'a> {
             &access_key,
             counter,
             &root_did,
-            forest,
             exchange_root,
+            forest,
             store,
         )
         .await?;
@@ -152,27 +151,19 @@ impl<'a> PrivateDirectoryHelper<'a> {
         wnfs_key: Vec<u8>,
     ) -> Result<(PrivateDirectoryHelper<'a>, AccessKey, Cid), String> {
         let rng = &mut thread_rng();
-        let ratchet_seed: [u8; 32];
-        let inumber: [u8; 32];
         if wnfs_key.is_empty() {
-            let wnfs_random_key = AesKey::new(utils::get_random_bytes::<32>(rng));
-            ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
-            inumber = utils::get_random_bytes::<32>(rng); // Needs to be random
-        } else {
-            ratchet_seed = Sha3_256::hash(&wnfs_key);
-            inumber = Sha3_256::hash(&ratchet_seed);
+            let err = "wnfskey is empty".to_string();
+            trace!("wnfsError occured in init: {:?}", err);
+            return Err(err);
         }
 
-        let forest_res = PrivateDirectoryHelper::create_private_forest(store.to_owned()).await;
+        let forest_res = PrivateDirectoryHelper::create_private_forest(store.to_owned(), rng).await;
 
         if forest_res.is_ok() {
             let (forest, _) = &mut forest_res.ok().unwrap();
-            // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
-            let root_dir_res = PrivateDirectory::new_with_seed_and_store(
-                Namefilter::default(),
+            let root_dir_res = PrivateDirectory::new_and_store(
+                &forest.empty_name(),
                 Utc::now(),
-                ratchet_seed,
-                inumber,
                 forest,
                 store,
                 rng,
@@ -250,10 +241,9 @@ impl<'a> PrivateDirectoryHelper<'a> {
         let root_did: String;
         let seed: [u8; 32];
         if wnfs_key.is_empty() {
-            let wnfs_random_key = AesKey::new(utils::get_random_bytes::<32>(rng));
-            let ratchet_seed = Sha3_256::hash(&wnfs_random_key.as_bytes());
-            root_did = Self::bytes_to_hex_str(&ratchet_seed);
-            seed = ratchet_seed;
+            let err = "wnfskey is empty".to_string();
+            trace!("wnfsError occured in load_with_wnfs_key: {:?}", err);
+            return Err(err);
         } else {
             root_did = Self::bytes_to_hex_str(&wnfs_key);
             seed = wnfs_key.to_owned().try_into().expect("Length mismatch");
@@ -269,7 +259,6 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 PrivateDirectoryHelper::load_private_forest(store.to_owned(), forest_cid).await;
             if forest_res.is_ok() {
                 let forest = &mut forest_res.ok().unwrap();
-                // Create a root directory from the ratchet_seed, inumber and namefilter. Directory gets saved in forest.
                 // Re-load private node from forest
                 let counter_res = recipient::find_latest_share_counter(
                     0,
@@ -283,13 +272,14 @@ impl<'a> PrivateDirectoryHelper<'a> {
                 if counter_res.is_ok() {
                     let counter = counter_res.ok().unwrap().map(|x| x).unwrap_or_default();
                     trace!("wnfsutils: load_with_wnfs_key with counter: {:?}", counter);
-                    let label = sharer::create_share_label(
+                    let name = sharer::create_share_name(
                         counter,
                         &root_did,
                         &exchange_keypair.encode_public_key(),
+                        forest,
                     );
                     let node_res =
-                        recipient::receive_share(label, &exchange_keypair, forest, store).await;
+                        recipient::receive_share(&name, &exchange_keypair, forest, store).await;
                     if node_res.is_ok() {
                         let node = node_res.ok().unwrap();
                         let latest_node = node.search_latest(forest, store).await;
@@ -358,14 +348,19 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
     async fn create_private_forest(
         store: FFIFriendlyBlockStore<'a>,
-    ) -> Result<(Rc<PrivateForest>, Cid), String> {
+        rng: &mut ThreadRng,
+    ) -> Result<(Rc<HamtForest>, Cid), String> {
+        // Do a trusted setup for WNFS' name accumulators
+        let setup = AccumulatorSetup::trusted(rng);
+
         // Create the private forest (a HAMT), a map-like structure where file and directory ciphertexts are stored.
-        let forest = Rc::new(PrivateForest::new());
+        let forest = &mut HamtForest::new_rc(setup);
 
         // Doing this will give us a single root CID
-        let private_root_cid = store.put_async_serializable(&forest).await;
+        let private_root_cid = store.put_async_serializable(forest).await;
         if private_root_cid.is_ok() {
-            Ok((forest, private_root_cid.ok().unwrap()))
+            let ret_forest = Rc::clone(forest);
+            Ok((ret_forest, private_root_cid.ok().unwrap()))
         } else {
             trace!(
                 "wnfsError occured in create_private_forest: {:?}",
@@ -378,9 +373,9 @@ impl<'a> PrivateDirectoryHelper<'a> {
     async fn load_private_forest(
         store: FFIFriendlyBlockStore<'a>,
         forest_cid: Cid,
-    ) -> Result<Rc<PrivateForest>, String> {
+    ) -> Result<Rc<HamtForest>, String> {
         // Deserialize private forest from the blockstore.
-        let forest = store.get_deserializable::<PrivateForest>(&forest_cid).await;
+        let forest = store.get_deserializable::<HamtForest>(&forest_cid).await;
         if forest.is_ok() {
             Ok(Rc::new(forest.ok().unwrap()))
         } else {
@@ -394,7 +389,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
 
     pub async fn update_private_forest(
         store: FFIFriendlyBlockStore<'a>,
-        forest: Rc<PrivateForest>,
+        forest: Rc<HamtForest>,
     ) -> Result<Cid, String> {
         // Serialize the private forest to DAG CBOR.
         // Doing this will give us a single root CID
@@ -567,7 +562,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         if modification_time_seconds > 0 {
             let naive_datetime =
                 NaiveDateTime::from_timestamp_opt(modification_time_seconds, 0).unwrap();
-            modification_time_utc = DateTime::from_utc(naive_datetime, Utc);
+            modification_time_utc = DateTime::from_naive_utc_and_offset(naive_datetime, Utc);
         }
         let write_res = root_dir
             .write(
@@ -630,7 +625,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
         if modification_time_seconds > 0 {
             let naive_datetime =
                 NaiveDateTime::from_timestamp_opt(modification_time_seconds, 0).unwrap();
-            modification_time_utc = DateTime::from_utc(naive_datetime, Utc);
+            modification_time_utc = DateTime::from_naive_utc_and_offset(naive_datetime, Utc);
         }
 
         let file_open_res = root_dir
@@ -723,7 +718,7 @@ impl<'a> PrivateDirectoryHelper<'a> {
                         let file_res = private_node.as_file();
                         if file_res.is_ok() {
                             let file = file_res.ok().unwrap();
-                            let mut stream = file.stream_content(index, &forest, &mut self.store);
+                            let mut stream = file.stream_content(index, forest, &mut self.store);
                             while let Some(block) = stream.next().await {
                                 if block.is_ok() {
                                     let write_result =
