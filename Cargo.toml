@@ -5,7 +5,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wnfs = { git = "https://github.com/wnfs-wg/rs-wnfs.git", rev = "e6cee873273e154c7855d17e9c756717a635874b" }
+wnfs = { git = "https://github.com/wnfs-wg/rs-wnfs.git", rev = "491ce8555d811477e934e6a1a6b6e0d347a32357" }
 # Need to implement a put_block_keyed method for datastore after this commit which is required for rs-car-mirror and other structural changes to datastore are done
 bytes = "1.4.0"
 chrono = "0.4.22"
